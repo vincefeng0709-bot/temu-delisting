@@ -1,0 +1,26 @@
+[project]
+name = "temu-delisting"
+version = "0.1.0"
+description = "Temu 卖家中心违规商品自动化下架工具"
+requires-python = ">=3.10"
+dependencies = [
+    "playwright>=1.45",
+    "python-dotenv>=1.0",
+    "pyyaml>=6.0",
+    "click>=8.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+temu-delisting = "temu_delisting.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+data/app.db
+data/storage_state.json
+data/exports/*
+!data/exports/.gitkeep
+.pytest_cache/
+cookies*.json
+src/temu_delisting.egg-info/
