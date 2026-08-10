@@ -1,0 +1,99 @@
+/* 干净简洁的浅色风格，走中性灰蓝配色 */
+
+QWidget {
+    background-color: #f7f8fa;
+    color: #1f2329;
+    font-family: "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    font-size: 14px;
+}
+
+QMainWindow {
+    background-color: #f7f8fa;
+}
+
+QLabel#sectionTitle {
+    font-size: 15px;
+    font-weight: 600;
+    color: #1f2329;
+    padding-bottom: 4px;
+}
+
+QLabel#hintLabel {
+    color: #8a8f99;
+    font-size: 12px;
+}
+
+QComboBox, QLineEdit, QTextEdit, QPlainTextEdit {
+    background-color: #ffffff;
+    border: 1px solid #d7dae0;
+    border-radius: 6px;
+    padding: 6px 10px;
+    selection-background-color: #dbe7ff;
+}
+
+QComboBox:disabled, QPushButton:disabled {
+    color: #b0b4bb;
+}
+
+QPushButton {
+    background-color: #ffffff;
+    border: 1px solid #d7dae0;
+    border-radius: 6px;
+    padding: 7px 18px;
+}
+
+QPushButton:hover {
+    border-color: #4d6bfe;
+}
+
+QPushButton#primaryButton {
+    background-color: #4d6bfe;
+    color: #ffffff;
+    border: none;
+    font-weight: 600;
+}
+
+QPushButton#primaryButton:hover {
+    background-color: #3d59e0;
+}
+
+QPushButton#primaryButton:disabled {
+    background-color: #c7d0fb;
+    color: #ffffff;
+}
+
+QPushButton#dangerButton {
+    background-color: #ffffff;
+    color: #e0554f;
+    border: 1px solid #f0b5b2;
+}
+
+QPushButton#dangerButton:hover {
+    background-color: #fdecea;
+}
+
+QProgressBar {
+    background-color: #ffffff;
+    border: 1px solid #d7dae0;
+    border-radius: 6px;
+    text-align: center;
+    height: 20px;
+}
+
+QProgressBar::chunk {
+    background-color: #4d6bfe;
+    border-radius: 5px;
+}
+
+QPlainTextEdit#logPanel {
+    background-color: #1f2329;
+    color: #d7dae0;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12px;
+    border-radius: 8px;
+}
+
+QStatusBar {
+    background-color: #f0f1f3;
+    color: #8a8f99;
+}
