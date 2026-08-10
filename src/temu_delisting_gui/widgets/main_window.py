@@ -19,6 +19,8 @@ from PySide6.QtWidgets import (
 
 from temu_delisting import accounts
 
+from .login_wizard import LoginWizardDialog
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
@@ -71,7 +73,13 @@ class MainWindow(QMainWindow):
         self.start_scan_button.setEnabled(True)
 
     def _on_add_account_clicked(self) -> None:
-        self._log("【添加账号】登录向导将在下一阶段接入，敬请期待。")
+        dialog = LoginWizardDialog(self)
+        if dialog.exec() == LoginWizardDialog.Accepted and dialog.created_account is not None:
+            self._reload_accounts()
+            index = self.account_combo.findData(dialog.created_account.id)
+            if index >= 0:
+                self.account_combo.setCurrentIndex(index)
+            self._log(f"【添加账号】已成功添加账号「{dialog.created_account.display_name}」。")
 
     # -- 操作区 --------------------------------------------------------
 

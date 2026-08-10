@@ -89,26 +89,36 @@ def _load_existing(storage_state_path: Path) -> dict:
         return json.load(f)
 
 
+def merge_cookie_states(existing: dict, new: dict) -> dict:
+    """按 name+domain+path 去重合并两份 storage_state（新的覆盖同名旧的），
+    而不是整个覆盖 —— 这样可以分几次合并不同域名（比如 seller.kuajingmaihuo.com
+    和 agentseller.temu.com）导出的 Cookie，不会互相丢失。纯内存操作，不碰磁盘
+    ——GUI 登录向导用这个在完成前先把两次粘贴的内容攒在内存里。
+    """
+    merged: dict[tuple[str, str, str], dict] = {
+        (c["name"], c["domain"], c["path"]): c for c in existing.get("cookies", [])
+    }
+    for c in new.get("cookies", []):
+        merged[(c["name"], c["domain"], c["path"])] = c
+    return {"cookies": list(merged.values()), "origins": existing.get("origins", [])}
+
+
+def write_storage_state(state: dict, storage_state_path: Path) -> None:
+    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(storage_state_path, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
 def import_cookies_text(cookie_editor_json_text: str, storage_state_path: Path) -> int:
     """把新导出的 Cookie（文本形式，GUI 粘贴框直接用这个）合并进已有的
-    storage_state.json（按 name+domain+path 去重覆盖），而不是整个覆盖 ——
-    这样可以分几次导入不同域名（比如 seller.kuajingmaihuo.com 和
-    agentseller.temu.com）的 Cookie，不会互相丢失。
+    storage_state.json 并立即写盘。CLI 用这个；GUI 登录向导为了避免"没点完成
+    就取消导致半成品账号"，改用 merge_cookie_states + write_storage_state
+    自己控制何时落盘。
     """
     new_state = convert_cookie_editor_export_text(cookie_editor_json_text)
     existing_state = _load_existing(storage_state_path)
-
-    merged: dict[tuple[str, str, str], dict] = {
-        (c["name"], c["domain"], c["path"]): c for c in existing_state.get("cookies", [])
-    }
-    for c in new_state["cookies"]:
-        merged[(c["name"], c["domain"], c["path"])] = c
-
-    result = {"cookies": list(merged.values()), "origins": existing_state.get("origins", [])}
-
-    storage_state_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(storage_state_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+    result = merge_cookie_states(existing_state, new_state)
+    write_storage_state(result, storage_state_path)
     return len(result["cookies"])
 
 

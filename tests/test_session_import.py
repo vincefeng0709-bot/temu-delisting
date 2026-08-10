@@ -7,6 +7,8 @@ from temu_delisting.session_import import (
     convert_cookie_editor_export_text,
     import_cookies,
     import_cookies_text,
+    merge_cookie_states,
+    write_storage_state,
 )
 
 SAMPLE = [
@@ -143,3 +145,25 @@ def test_import_cookies_text_writes_storage_state(tmp_path):
     count = import_cookies_text(json.dumps(SAMPLE), storage_state_path)
     assert count == 2
     assert storage_state_path.exists()
+
+
+def test_merge_cookie_states_is_pure_in_memory(tmp_path):
+    """登录向导用这个：解析两段粘贴文本，内存里合并，最后才一次性落盘。"""
+    state_a = convert_cookie_editor_export_text(
+        json.dumps([{**SAMPLE[0], "name": "sid"}])
+    )
+    state_b = convert_cookie_editor_export_text(
+        json.dumps([{**SAMPLE[0], "name": "agent_sid", "value": "second"}])
+    )
+
+    merged = merge_cookie_states(state_a, state_b)
+    names = {c["name"] for c in merged["cookies"]}
+
+    assert names == {"sid", "agent_sid"}
+    storage_state_path = tmp_path / "storage_state.json"
+    assert not storage_state_path.exists()  # 还没写盘
+
+    write_storage_state(merged, storage_state_path)
+    assert storage_state_path.exists()
+    on_disk = json.loads(storage_state_path.read_text(encoding="utf-8"))
+    assert {c["name"] for c in on_disk["cookies"]} == {"sid", "agent_sid"}
