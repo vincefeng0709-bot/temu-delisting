@@ -1,47 +1,67 @@
-"""主窗口：账号选择器 + 开始扫描/停止按钮 + 进度条 + 实时日志区。
+"""主窗口：账号选择器 + 日期范围 + 开始扫描/停止按钮 + 进度条 + 实时日志区，
+外加一个"审核清单"标签页。
 
-Stage 2 只搭骨架，不接真实的自动化逻辑——按钮点了会在日志区打印一行提示，
-后续阶段再把 actions.run_scan / run_apply 真正接上。
+扫描在后台线程（ScanWorker）里跑，不卡界面；扫描完成会自动切到审核清单页。
 """
 from __future__ import annotations
 
+from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
+    QDateEdit,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMessageBox,
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from temu_delisting import accounts
+from temu_delisting.config import load_settings
 
+from ..worker import ScanWorker
 from .login_wizard import LoginWizardDialog
+from .review_table import ReviewTableWidget
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Temu 违规商品下架助手")
-        self.resize(880, 620)
+        self.resize(960, 680)
 
-        central = QWidget()
-        self.setCentralWidget(central)
-        root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(20, 20, 20, 20)
-        root_layout.setSpacing(16)
+        self._scan_worker: ScanWorker | None = None
 
-        root_layout.addLayout(self._build_account_row())
-        root_layout.addLayout(self._build_action_row())
-        root_layout.addWidget(self._build_progress_bar())
-        root_layout.addWidget(self._build_log_panel(), stretch=1)
+        tabs = QTabWidget()
+        self.setCentralWidget(tabs)
+
+        tabs.addTab(self._build_run_tab(), "运行")
+        self.review_table = ReviewTableWidget()
+        tabs.addTab(self.review_table, "审核清单")
+        self._tabs = tabs
 
         self.statusBar().showMessage("就绪")
-
         self._reload_accounts()
+
+    # -- "运行" 标签页 ----------------------------------------------------
+
+    def _build_run_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(16)
+
+        layout.addLayout(self._build_account_row())
+        layout.addLayout(self._build_date_row())
+        layout.addLayout(self._build_action_row())
+        layout.addWidget(self._build_progress_bar())
+        layout.addWidget(self._build_log_panel(), stretch=1)
+        return tab
 
     # -- 账号选择区 --------------------------------------------------
 
@@ -81,6 +101,27 @@ class MainWindow(QMainWindow):
                 self.account_combo.setCurrentIndex(index)
             self._log(f"【添加账号】已成功添加账号「{dialog.created_account.display_name}」。")
 
+    # -- 日期范围 --------------------------------------------------------
+
+    def _build_date_row(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        yesterday = QDate.currentDate().addDays(-1)
+
+        layout.addWidget(QLabel("违规开始日期："))
+        self.start_date_edit = QDateEdit(yesterday)
+        self.start_date_edit.setCalendarPopup(True)
+        self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        layout.addWidget(self.start_date_edit)
+
+        layout.addWidget(QLabel("结束日期："))
+        self.end_date_edit = QDateEdit(yesterday)
+        self.end_date_edit.setCalendarPopup(True)
+        self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
+        layout.addWidget(self.end_date_edit)
+
+        layout.addStretch(1)
+        return layout
+
     # -- 操作区 --------------------------------------------------------
 
     def _build_action_row(self) -> QHBoxLayout:
@@ -102,14 +143,56 @@ class MainWindow(QMainWindow):
 
     def _on_start_scan_clicked(self) -> None:
         account_id = self.account_combo.currentData()
-        account_name = self.account_combo.currentText()
-        self._log(
-            f"【开始扫描】账号「{account_name}」（{account_id}）—— "
-            f"扫描/审核/下架流程将在后续阶段接入。"
-        )
+        if not account_id:
+            QMessageBox.information(self, "开始扫描", "请先添加一个账号。")
+            return
+
+        start = self.start_date_edit.date().toString("yyyy-MM-dd")
+        end = self.end_date_edit.date().toString("yyyy-MM-dd")
+        if self.start_date_edit.date() > self.end_date_edit.date():
+            QMessageBox.warning(self, "开始扫描", "开始日期不能晚于结束日期。")
+            return
+
+        settings = load_settings(account_id=account_id)
+
+        self.start_scan_button.setEnabled(False)
+        self.add_account_button.setEnabled(False)
+        self.progress_bar.setRange(0, 0)  # 不确定进度，先转圈
+        self.progress_bar.setFormat("扫描中…")
+        self.statusBar().showMessage("扫描中…")
+        self._log(f"【开始扫描】账号「{self.account_combo.currentText()}」，日期 {start} ~ {end}")
+
+        self._scan_worker = ScanWorker(settings, start, end)
+        self._scan_worker.log_line.connect(self._log)
+        self._scan_worker.finished_ok.connect(self._on_scan_finished)
+        self._scan_worker.failed.connect(self._on_scan_failed)
+        self._scan_worker.start()
+
+    def _on_scan_finished(self, result) -> None:
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(100)
+        self.progress_bar.setFormat(f"扫描完成，共 {result.row_count} 条")
+        self.statusBar().showMessage("扫描完成")
+        self.start_scan_button.setEnabled(True)
+        self.add_account_button.setEnabled(True)
+
+        account_id = self.account_combo.currentData()
+        settings = load_settings(account_id=account_id)
+        self.review_table.load(settings, result.batch_id, result.suggestions)
+        self._tabs.setCurrentWidget(self.review_table)
+
+    def _on_scan_failed(self, message: str) -> None:
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFormat("扫描失败")
+        self.statusBar().showMessage("扫描失败")
+        self.start_scan_button.setEnabled(True)
+        self.add_account_button.setEnabled(True)
+        self._log(f"【扫描失败】{message}")
+        QMessageBox.warning(self, "扫描失败", message)
 
     def _on_stop_clicked(self) -> None:
-        self._log("【停止】收到停止请求（占位，尚未接入真实任务）。")
+        self._log("【停止】收到停止请求（占位，将在下架流程接入后生效）。")
 
     # -- 进度条 --------------------------------------------------------
 
