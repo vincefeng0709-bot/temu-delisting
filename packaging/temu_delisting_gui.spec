@@ -53,7 +53,7 @@ exe = EXE(  # noqa: F821
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon=str(PROJECT_ROOT / "src" / "temu_delisting_gui" / "resources" / "icons" / "app.ico"),
     # 用扁平目录结构（不套一层 _internal 子文件夹）：get_app_root() 假定
     # config/、data/ 这些都跟 exe 在同一层，跟源码运行时的目录结构保持一致。
     contents_directory=".",

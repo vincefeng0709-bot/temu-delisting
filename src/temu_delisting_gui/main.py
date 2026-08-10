@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from PySide6 import __version__ as pyside6_version
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from temu_delisting.config import load_settings
@@ -40,6 +41,10 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setApplicationName("Temu 违规商品下架助手")
+
+    icon_path = RESOURCES_DIR / "icons" / "app.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
 
     style_path = RESOURCES_DIR / "style.qss"
     if style_path.exists():
