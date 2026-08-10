@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from .paths import get_app_root
 
 DEFAULT_ACCOUNT_ID = "default"
 DEFAULT_ACCOUNT_NAME = "默认账号"
@@ -23,7 +23,7 @@ DEFAULT_ACCOUNT_NAME = "默认账号"
 def _data_root() -> Path:
     raw = os.getenv("DATA_ROOT", "data")
     path = Path(raw)
-    return path if path.is_absolute() else PROJECT_ROOT / path
+    return path if path.is_absolute() else get_app_root() / path
 
 
 def _registry_path() -> Path:

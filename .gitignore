@@ -7,3 +7,5 @@ data/
 .pytest_cache/
 cookies*.json
 src/temu_delisting.egg-info/
+dist/
+build/

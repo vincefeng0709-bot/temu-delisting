@@ -9,8 +9,7 @@ import yaml
 from dotenv import load_dotenv
 
 from . import accounts
-
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+from .paths import get_app_root
 
 
 @dataclass
@@ -35,9 +34,10 @@ class Settings:
 def load_settings(env_file: str | Path | None = None, account_id: str | None = None) -> Settings:
     """account_id 不传时自动使用/创建"默认账号"，CLI 不需要关心多账号概念——
     这是给 GUI 那边真正做账号切换用的参数。"""
-    load_dotenv(dotenv_path=env_file or (PROJECT_ROOT / ".env"))
+    app_root = get_app_root()
+    load_dotenv(dotenv_path=env_file or (app_root / ".env"))
 
-    violation_config_path = PROJECT_ROOT / "config" / "violation_types.yaml"
+    violation_config_path = app_root / "config" / "violation_types.yaml"
     with open(violation_config_path, "r", encoding="utf-8") as f:
         violation_config = yaml.safe_load(f) or {}
 

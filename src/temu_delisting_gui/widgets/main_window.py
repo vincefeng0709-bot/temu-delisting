@@ -30,6 +30,7 @@ from temu_delisting import accounts
 from temu_delisting.config import load_settings
 from temu_delisting.store import open_store
 
+from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
 from .login_wizard import LoginWizardDialog
 from .review_table import ReviewTableWidget
@@ -38,7 +39,7 @@ from .review_table import ReviewTableWidget
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Temu 违规商品下架助手")
+        self.setWindowTitle(f"Temu 违规商品下架助手 v{__version__}")
         self.resize(960, 680)
 
         self._scan_worker: ScanWorker | None = None
