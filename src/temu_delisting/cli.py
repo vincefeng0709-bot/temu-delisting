@@ -5,14 +5,12 @@ from pathlib import Path
 
 import click
 
-from . import scraper
+from . import actions
 from .auth import ensure_logged_in
 from .browser import open_page
-from .classifier import classify
 from .config import load_settings
-from .delist import delist_spu
 from .logging_setup import get_logger, setup_logging
-from .review import export_suggestions_csv, interactive_review
+from .review import interactive_review
 from .session_import import import_cookies
 from .store import open_store
 
@@ -70,33 +68,14 @@ def scan(start: str, end: str, review: bool) -> None:
     settings = load_settings()
 
     with open_store(settings.db_path) as store:
-        batch_id = store.create_batch(start, end)
-        echo(f"[scan] 批次 ID: {batch_id}")
-
-        with open_page(settings) as page:
-            ensure_logged_in(page, settings)
-            scraper.goto_violation_list(page, settings)
-            scraper.query_violations(page, start, end)
-            rows = scraper.parse_violation_rows(page)
-
-        echo(f"[scan] 抓取到 {len(rows)} 条违规记录。")
-
-        for row in rows:
-            classification = classify(row.violation_type, settings.known_delist_types)
-            store.add_suggestion(
-                batch_id, row.spu_id, row.violation_type, row.violation_detail, classification
-            )
-
-        suggestions = store.list_suggestions(batch_id)
-        out_path = export_suggestions_csv(settings.exports_dir, batch_id, suggestions)
-        echo(f"[scan] 建议清单已导出: {out_path}")
+        result = actions.run_scan(settings, store, start, end, log=echo)
 
         if review:
-            interactive_review(store, batch_id)
+            interactive_review(store, result.batch_id)
         else:
             echo(
-                f"[scan] 请审核后再执行: temu-delisting review --batch {batch_id}，"
-                f"或直接 temu-delisting apply --batch {batch_id}"
+                f"[scan] 请审核后再执行: temu-delisting review --batch {result.batch_id}，"
+                f"或直接 temu-delisting apply --batch {result.batch_id}"
             )
 
 
@@ -129,43 +108,22 @@ def apply(batch_id: str, dry_run: bool, pause_before_chat: bool, pause_on_error:
     settings = load_settings()
 
     with open_store(settings.db_path) as store:
-        confirmed = store.list_suggestions(batch_id, review_status="confirmed")
-        if not confirmed:
-            echo("[apply] 没有已确认待执行的条目，先跑 scan / review。")
-            return
+        result = actions.run_apply(
+            settings,
+            store,
+            batch_id,
+            dry_run=dry_run,
+            pause_before_chat=pause_before_chat,
+            pause_on_error=pause_on_error,
+            log=echo,
+        )
 
-        echo(f"[apply] 共 {len(confirmed)} 个 SPU 待处理{'（dry-run，不会真正提交）' if dry_run else ''}。")
-
-        failed_spus: list[tuple[str, str]] = []
-
-        with open_page(settings) as page:
-            ensure_logged_in(page, settings)
-            for suggestion in confirmed:
-                echo(f"[apply] 处理 SPU {suggestion.spu_id} ...")
-                try:
-                    outcomes = delist_spu(
-                        page,
-                        settings,
-                        suggestion.spu_id,
-                        store,
-                        batch_id,
-                        dry_run=dry_run,
-                        pause_before_chat=pause_before_chat,
-                        pause_on_error=pause_on_error,
-                    )
-                except Exception as exc:  # noqa: BLE001 — 单个 SPU 出错不能拖垮整批
-                    echo(f"  [error] SPU {suggestion.spu_id} 处理失败，跳过，继续下一个: {exc}")
-                    failed_spus.append((suggestion.spu_id, str(exc)))
-                    continue
-
-                for outcome in outcomes:
-                    echo(f"  SKC {outcome.skc_id}: {outcome.status} ({outcome.detail})")
-
+        failed_spus = result.failed_spus
         failures = store.list_failures(batch_id)
         if failed_spus:
             echo(f"[apply] 有 {len(failed_spus)} 个 SPU 整体处理失败（脚本报错，可能没走完）：")
-            for spu_id, error in failed_spus:
-                echo(f"  SPU {spu_id}: {error}")
+            for r in failed_spus:
+                echo(f"  SPU {r.spu_id}: {r.error}")
         if failures:
             echo(
                 f"[apply] 有 {len(failures)} 个 SKC 未成功下架，需要人工确认，"

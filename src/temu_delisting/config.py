@@ -1,4 +1,4 @@
-"""加载 .env 环境变量和 config/violation_types.yaml。"""
+"""加载 .env 环境变量、config/violation_types.yaml，以及按账号解析出的数据路径。"""
 from __future__ import annotations
 
 import os
@@ -8,11 +8,14 @@ from pathlib import Path
 import yaml
 from dotenv import load_dotenv
 
+from . import accounts
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass
 class Settings:
+    account_id: str
     seller_url: str
     username: str
     password: str
@@ -29,34 +32,31 @@ class Settings:
     delist_reasons: list[str] = field(default_factory=list)
 
 
-def _resolve(path_str: str) -> Path:
-    path = Path(path_str)
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def load_settings(env_file: str | Path | None = None) -> Settings:
+def load_settings(env_file: str | Path | None = None, account_id: str | None = None) -> Settings:
+    """account_id 不传时自动使用/创建"默认账号"，CLI 不需要关心多账号概念——
+    这是给 GUI 那边真正做账号切换用的参数。"""
     load_dotenv(dotenv_path=env_file or (PROJECT_ROOT / ".env"))
 
     violation_config_path = PROJECT_ROOT / "config" / "violation_types.yaml"
     with open(violation_config_path, "r", encoding="utf-8") as f:
         violation_config = yaml.safe_load(f) or {}
 
-    exports_dir = _resolve(os.getenv("EXPORTS_DIR", "data/exports"))
-    exports_dir.mkdir(parents=True, exist_ok=True)
-
-    log_dir = _resolve(os.getenv("LOG_DIR", "data/logs"))
+    if account_id is None:
+        account_id = accounts.ensure_default_account().id
+    paths = accounts.account_paths(account_id)
 
     return Settings(
+        account_id=account_id,
         seller_url=os.getenv("TEMU_SELLER_URL", "https://seller.kuajingmaihuo.com"),
         username=os.getenv("TEMU_USERNAME", ""),
         password=os.getenv("TEMU_PASSWORD", ""),
         headless=os.getenv("HEADLESS", "false").strip().lower() in {"1", "true", "yes"},
         browser_channel=os.getenv("BROWSER_CHANNEL", "chrome").strip(),
         slow_mo_ms=int(os.getenv("SLOW_MO_MS", "0")),
-        db_path=_resolve(os.getenv("DB_PATH", "data/app.db")),
-        storage_state_path=_resolve(os.getenv("STORAGE_STATE_PATH", "data/storage_state.json")),
-        exports_dir=exports_dir,
-        log_dir=log_dir,
+        db_path=paths.db_path,
+        storage_state_path=paths.storage_state_path,
+        exports_dir=paths.exports_dir,
+        log_dir=paths.log_dir,
         chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "60")),
         chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "8")),
         known_delist_types=violation_config.get("known_delist_types", []),

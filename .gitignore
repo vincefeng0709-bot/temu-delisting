@@ -3,11 +3,7 @@ __pycache__/
 .venv/
 venv/
 .env
-data/app.db
-data/storage_state.json
-data/exports/*
-!data/exports/.gitkeep
+data/
 .pytest_cache/
 cookies*.json
 src/temu_delisting.egg-info/
-data/logs/

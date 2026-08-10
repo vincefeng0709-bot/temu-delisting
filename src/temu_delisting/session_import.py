@@ -53,9 +53,16 @@ def _convert_cookie(raw: dict) -> dict:
     }
 
 
-def convert_cookie_editor_export(cookie_editor_json_path: Path) -> dict:
-    with open(cookie_editor_json_path, "r", encoding="utf-8") as f:
-        raw_cookies = json.load(f)
+def convert_cookie_editor_export_text(cookie_editor_json_text: str) -> dict:
+    """核心解析逻辑：接受 Cookie-Editor "Export as JSON" 的原始文本（不管是从
+    文件读出来的还是用户直接粘贴的），转成 Playwright storage_state 格式。"""
+    try:
+        raw_cookies = json.loads(cookie_editor_json_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "这段内容不是合法的 JSON，请确认是从 Cookie-Editor 的 'Export as JSON' "
+            "复制出来的完整内容。"
+        ) from exc
 
     if isinstance(raw_cookies, dict) and "cookies" in raw_cookies:
         raw_cookies = raw_cookies["cookies"]
@@ -70,6 +77,11 @@ def convert_cookie_editor_export(cookie_editor_json_path: Path) -> dict:
     return {"cookies": cookies, "origins": []}
 
 
+def convert_cookie_editor_export(cookie_editor_json_path: Path) -> dict:
+    with open(cookie_editor_json_path, "r", encoding="utf-8") as f:
+        return convert_cookie_editor_export_text(f.read())
+
+
 def _load_existing(storage_state_path: Path) -> dict:
     if not storage_state_path.exists():
         return {"cookies": [], "origins": []}
@@ -77,12 +89,13 @@ def _load_existing(storage_state_path: Path) -> dict:
         return json.load(f)
 
 
-def import_cookies(cookie_editor_json_path: Path, storage_state_path: Path) -> int:
-    """把新导出的 Cookie 合并进已有的 storage_state.json（按 name+domain+path
-    去重覆盖），而不是整个覆盖 —— 这样可以分几次导入不同域名（比如
-    seller.kuajingmaihuo.com 和 agentseller.temu.com）的 Cookie，不会互相丢失。
+def import_cookies_text(cookie_editor_json_text: str, storage_state_path: Path) -> int:
+    """把新导出的 Cookie（文本形式，GUI 粘贴框直接用这个）合并进已有的
+    storage_state.json（按 name+domain+path 去重覆盖），而不是整个覆盖 ——
+    这样可以分几次导入不同域名（比如 seller.kuajingmaihuo.com 和
+    agentseller.temu.com）的 Cookie，不会互相丢失。
     """
-    new_state = convert_cookie_editor_export(cookie_editor_json_path)
+    new_state = convert_cookie_editor_export_text(cookie_editor_json_text)
     existing_state = _load_existing(storage_state_path)
 
     merged: dict[tuple[str, str, str], dict] = {
@@ -97,3 +110,9 @@ def import_cookies(cookie_editor_json_path: Path, storage_state_path: Path) -> i
     with open(storage_state_path, "w", encoding="utf-8") as f:
         json.dump(result, f, ensure_ascii=False, indent=2)
     return len(result["cookies"])
+
+
+def import_cookies(cookie_editor_json_path: Path, storage_state_path: Path) -> int:
+    """CLI 用：从文件路径导入（内部就是读文件文本再调 import_cookies_text）。"""
+    with open(cookie_editor_json_path, "r", encoding="utf-8") as f:
+        return import_cookies_text(f.read(), storage_state_path)

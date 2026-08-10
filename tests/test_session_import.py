@@ -1,6 +1,13 @@
 import json
 
-from temu_delisting.session_import import convert_cookie_editor_export, import_cookies
+import pytest
+
+from temu_delisting.session_import import (
+    convert_cookie_editor_export,
+    convert_cookie_editor_export_text,
+    import_cookies,
+    import_cookies_text,
+)
 
 SAMPLE = [
     {
@@ -117,3 +124,22 @@ def test_import_merges_across_two_domains_without_losing_either(tmp_path):
 
     assert count == 2
     assert names == {"sid", "agent_sid"}
+
+
+def test_convert_from_text_matches_file_based(tmp_path):
+    text = json.dumps(SAMPLE)
+    result = convert_cookie_editor_export_text(text)
+    cookies = {c["name"]: c for c in result["cookies"]}
+    assert cookies["sid"]["value"] == "abc123"
+
+
+def test_convert_from_text_rejects_non_json_with_friendly_message():
+    with pytest.raises(ValueError, match="不是合法的 JSON"):
+        convert_cookie_editor_export_text("this is not json")
+
+
+def test_import_cookies_text_writes_storage_state(tmp_path):
+    storage_state_path = tmp_path / "storage_state.json"
+    count = import_cookies_text(json.dumps(SAMPLE), storage_state_path)
+    assert count == 2
+    assert storage_state_path.exists()

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import Callable
 
 from playwright.sync_api import Page
 
@@ -110,7 +111,11 @@ def delist_spu(
     dry_run: bool = False,
     pause_before_chat: bool = False,
     pause_on_error: bool = False,
+    should_stop: Callable[[], bool] | None = None,
 ) -> list[SkcOutcome]:
+    """should_stop：GUI"停止"按钮用的钩子，每处理完一个 SKC 后检查一次，
+    返回 True 就不再处理这个 SPU 剩下的 SKC（不会中途打断正在填的表单，
+    避免留下半提交的脏状态，最多是"等这个 SKC 处理完再停"）。"""
     goto_lifecycle_management(page, settings)
     query_spu(page, spu_id)
     skc_ids = collect_skc_ids(page)
@@ -119,6 +124,9 @@ def delist_spu(
     session_opened = False
 
     for skc_id in skc_ids:
+        if should_stop is not None and should_stop():
+            break
+
         if store.is_already_delisted(skc_id):
             outcomes.append(
                 SkcOutcome(skc_id=skc_id, status="success", detail="已在此前批次处理过，跳过")
