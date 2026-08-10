@@ -22,6 +22,7 @@ class Settings:
     db_path: Path
     storage_state_path: Path
     exports_dir: Path
+    log_dir: Path
     chat_timeout_seconds: int
     chat_cooldown_seconds: int
     known_delist_types: list[str] = field(default_factory=list)
@@ -43,6 +44,8 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
     exports_dir = _resolve(os.getenv("EXPORTS_DIR", "data/exports"))
     exports_dir.mkdir(parents=True, exist_ok=True)
 
+    log_dir = _resolve(os.getenv("LOG_DIR", "data/logs"))
+
     return Settings(
         seller_url=os.getenv("TEMU_SELLER_URL", "https://seller.kuajingmaihuo.com"),
         username=os.getenv("TEMU_USERNAME", ""),
@@ -53,6 +56,7 @@ def load_settings(env_file: str | Path | None = None) -> Settings:
         db_path=_resolve(os.getenv("DB_PATH", "data/app.db")),
         storage_state_path=_resolve(os.getenv("STORAGE_STATE_PATH", "data/storage_state.json")),
         exports_dir=exports_dir,
+        log_dir=log_dir,
         chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "60")),
         chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "8")),
         known_delist_types=violation_config.get("known_delist_types", []),

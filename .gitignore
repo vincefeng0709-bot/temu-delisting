@@ -10,3 +10,4 @@ data/exports/*
 .pytest_cache/
 cookies*.json
 src/temu_delisting.egg-info/
+data/logs/
