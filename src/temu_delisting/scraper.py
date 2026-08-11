@@ -287,7 +287,7 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     seen: set[tuple[str, str, str]] = set()
 
     for page_index in range(500):
-        page_rows = _parse_current_page_rows(page)
+        page_rows = _parse_current_page_rows_safe(page)
         before_signature = _page_signature(page_rows)
         new_count = 0
         for row in page_rows:
@@ -317,7 +317,7 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             page.wait_for_timeout(random.randint(600, 1400))
             next_item.first.locator("a").click()
             wait_settle(page)
-            after_signature = _page_signature(_parse_current_page_rows(page))
+            after_signature = _page_signature(_parse_current_page_rows_safe(page))
             if after_signature != before_signature:
                 advanced = True
                 if attempt > 0:
@@ -359,6 +359,31 @@ def _page_signature(rows: list[ViolationRow]) -> tuple[str, ...]:
     return tuple(f"{r.spu_id}|{r.violation_type}" for r in rows)
 
 
+_ROW_READ_TIMEOUT_MS = 5000
+
+
+def _parse_current_page_rows_safe(page: Page, retries: int = 3) -> list[ViolationRow]:
+    """点完翻页/查询按钮后，表格经常还处在"正在刷新"的过渡状态——旧的行
+    正在被移除、新的行还没插入完。这时候去读某一行某个格子的文字，那一行
+    可能读到一半就从 DOM 里消失了，Playwright 会一直等它重新出现，等满
+    默认的 30 秒才报超时——之前这个异常没接住，会直接把整个扫描任务
+    崩掉（实测日志里出现过好几次）。这里改成读取用短一点的超时（5秒，
+    不是不管，读不到就趁早重试，不用死等 30 秒），读取失败就等一下再
+    重读整页，而不是让一次页面渲染过渡期的时序巧合搞崩整个扫描。
+    """
+    logger = get_logger()
+    for attempt in range(retries):
+        try:
+            return _parse_current_page_rows(page)
+        except PlaywrightTimeoutError:
+            logger.warning(
+                f"[scraper] 读取表格行内容超时（页面可能还在刷新中），第 {attempt + 1} 次重试"
+            )
+            page.wait_for_timeout(800)
+    logger.error("[scraper] 读取表格行内容连续超时，放弃这一页的内容，可能导致漏抓")
+    return []
+
+
 def _parse_current_page_rows(page: Page) -> list[ViolationRow]:
     result: list[ViolationRow] = []
     table_rows = page.locator("table tbody tr")
@@ -368,11 +393,13 @@ def _parse_current_page_rows(page: Page) -> list[ViolationRow]:
         cells = row.locator("td")
         if cells.count() < 5:
             continue
-        spu_text = cells.nth(1).inner_text()
+        spu_text = cells.nth(1).inner_text(timeout=_ROW_READ_TIMEOUT_MS)
         spu_id = _extract_spu_id(spu_text)
-        violation_type = cells.nth(3).inner_text().strip()
-        violation_detail = cells.nth(4).inner_text().strip()
-        violation_status = cells.nth(5).inner_text().strip() if cells.count() > 5 else ""
+        violation_type = cells.nth(3).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip()
+        violation_detail = cells.nth(4).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip()
+        violation_status = (
+            cells.nth(5).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip() if cells.count() > 5 else ""
+        )
         if spu_id:
             result.append(
                 ViolationRow(

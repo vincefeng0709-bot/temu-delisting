@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
+from .logging_setup import get_logger
 from .text_match import loose_text
 
 DELISTED_KEYWORDS = ("已下架",)
@@ -53,8 +54,10 @@ def open_chat_session(page: Page, timeout_ms: int = 10000) -> None:
     都重新调用这个函数：客服图标是个"开关"，面板已经开着的话再点一次会把它
     关掉，反而导致后面找不到"自助工具"。
     """
+    logger = get_logger()
     page.bring_to_front()
     page.locator('[class*="kefu_kefu__"]').first.click()
+    logger.info("[chat] 已点击客服图标")
 
     # "联系官方客服"这个按钮不一定是标准 <button> 标签（这个站点很多按钮是
     # div/a 自己套样式），用文字匹配而不是 role="button"，避免角色识别不上
@@ -62,10 +65,12 @@ def open_chat_session(page: Page, timeout_ms: int = 10000) -> None:
     try:
         contact_button.first.wait_for(timeout=timeout_ms)
         contact_button.first.click()
+        logger.info("[chat] 已点击「联系官方客服」")
     except PlaywrightTimeoutError:
-        pass  # 可能已经在对话里了
+        logger.info("[chat] 没找到「联系官方客服」按钮，视为已经在对话里了")
 
-    dismiss_already_processed_alert(page)
+    if dismiss_already_processed_alert(page):
+        logger.info("[chat] 打开客服面板时清理了一个残留的「已处理成功」弹窗")
 
 
 def trigger_delist_flow(
@@ -78,12 +83,15 @@ def trigger_delist_flow(
     每个 SKC 都要调用一次，但不需要（也不应该）重新打开客服面板 ——
     面板会一直保持打开状态，直到换了个 SPU 页面刷新为止。
     """
-    dismiss_already_processed_alert(page)
+    logger = get_logger()
+    if dismiss_already_processed_alert(page):
+        logger.info("[chat] 发起下架流程前清理了一个残留的「已处理成功」弹窗")
 
     self_service_tool = page.get_by_text(loose_text("自助工具"))
     try:
         self_service_tool.first.wait_for(timeout=tool_wait_ms)
     except PlaywrightTimeoutError:
+        logger.error(f"[chat] 等待「自助工具」超过 {tool_wait_ms}ms 仍未出现")
         if not pause_on_error:
             raise
         page.pause()  # 冻结在卡住的现场，检查完手动点 Resume 后重试一次
@@ -91,13 +99,20 @@ def trigger_delist_flow(
 
     self_service_tool.first.click()
     page.get_by_text(loose_text("商品下架")).first.click()
+    logger.info("[chat] 已点击「自助工具」->「商品下架」")
 
 
 def wait_for_send_product_prompt(page: Page, timeout_ms: int) -> None:
     """等待客服回复"发商品"提示，再点击。"""
+    logger = get_logger()
     send_product = page.get_by_text(loose_text("发商品"))
-    send_product.first.wait_for(timeout=timeout_ms)
+    try:
+        send_product.first.wait_for(timeout=timeout_ms)
+    except PlaywrightTimeoutError:
+        logger.error(f"[chat] 等待客服回复「发商品」提示超过 {timeout_ms}ms 仍未出现")
+        raise
     send_product.first.click()
+    logger.info("[chat] 客服已回复「发商品」，已点击")
 
 
 def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: bool = False) -> None:
@@ -128,6 +143,7 @@ def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: 
         return
 
     dialog.get_by_role("button", name=loose_text("申请下架")).click()
+    get_logger().info(f"[chat] 已提交下架申请：SKC {skc_id}，原因「{delist_reason}」")
 
 
 def count_delist_replies(page: Page, skc_id: str) -> int:
@@ -161,22 +177,37 @@ def wait_for_delist_confirmation(
     另外还要识别"该商品已在您的上次咨询后处理成功"这种重复申请提示弹窗
     （不是聊天气泡，是残留没关掉的弹窗），这个也算成功。
     """
+    logger = get_logger()
     reply_marker = f"【SKC ID: {skc_id}】"
     reply_locator = page.get_by_text(reply_marker)
+    logger.info(f"[chat] 开始等待 SKC {skc_id} 的结论性回复，起点回复数={baseline_reply_count}")
 
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
         if dismiss_already_processed_alert(page):
+            logger.info(f"[chat] SKC {skc_id} 弹出「已处理成功」提示，视为下架成功")
             return ChatResult(
                 status="success", detail=f"重复申请：{ALREADY_PROCESSED_TEXT}（视为已下架成功）"
             )
 
-        if reply_locator.count() > baseline_reply_count:
+        current_count = reply_locator.count()
+        if current_count > baseline_reply_count:
             full_text = reply_locator.last.locator("xpath=ancestor::*[self::div][1]").inner_text()
+            logger.info(
+                f"[chat] SKC {skc_id} 收到新回复（回复数 {baseline_reply_count}->{current_count}）："
+                f"{full_text[:80]}"
+            )
             if any(keyword in full_text for keyword in DELISTED_KEYWORDS):
                 return ChatResult(status="success", detail=full_text)
             return ChatResult(status="failed", detail=full_text)
 
         page.wait_for_timeout(1000)
 
+    final_count = reply_locator.count()
+    logger.error(
+        f"[chat] SKC {skc_id} 等待 {timeout_ms}ms 超时——起点回复数={baseline_reply_count}，"
+        f"超时时回复数={final_count}"
+        + ("（数量没变，客服可能确实没回复）" if final_count <= baseline_reply_count else
+           "（数量其实变了，但没被 count()>baseline 判定出来，选择器/时机可能有问题，需要复查）")
+    )
     return ChatResult(status="timeout_needs_human", detail="等待客服确认回复超时")
