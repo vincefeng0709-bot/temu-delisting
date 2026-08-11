@@ -63,9 +63,9 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
         # 客服"结论性回复"现在靠 wait_for_delist_confirmation 里更宽松的
         # 匹配规则（不再只认"已下架"这一种说法）。实测发现客服回复经常要
         # 超过 15 秒，调太短会导致大量本来会成功的 SKC 被误判成"需要人工
-        # 跟进"，事后还要去后台核实——这里按同事的明确要求调成 8 秒，属于
+        # 跟进"，事后还要去后台核实——这里按同事的明确要求调成 4 秒，属于
         # "宁可多标一些需要人工确认，也要跑得快"的取舍，不是能自动兼顾的。
-        chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "8")),
+        chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "4")),
         chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "4")),
         known_delist_types=violation_config.get("known_delist_types", []),
         delist_reasons=violation_config.get("delist_reasons", []),
