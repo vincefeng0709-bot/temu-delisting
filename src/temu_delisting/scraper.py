@@ -85,16 +85,19 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
     page.locator(_DATE_TRIGGER).click()
     page.locator(_POPUP).wait_for(state="visible")
 
-    _navigate_to_left_month(page, start_year, start_month)
+    _navigate_panel_to_month(page, _LEFT_PANEL, start_year, start_month)
     _click_day(page, _LEFT_PANEL, start_year, start_month, start_day)
 
-    left_year, left_month = _panel_month(page, _LEFT_PANEL)
-    if (end_year, end_month) == (left_year, left_month):
+    if (end_year, end_month) == (start_year, start_month):
+        # 起止同一个月，两次点击都在左面板里完成，不用碰右面板
         _click_day(page, _LEFT_PANEL, end_year, end_month, end_day)
     else:
-        # 右面板恒等于左面板+1个月，所以把左面板翻到"结束月份的上一个月"即可
-        prev_month_year, prev_month = month_before(end_year, end_month)
-        _navigate_to_left_month(page, prev_month_year, prev_month)
+        # 实测发现左右两个面板各自有自己独立的"上/下个月"按钮（不是共用
+        # 一组、联动挪动的），之前假设"右面板恒等于左面板+1个月"是错的——
+        # 选大跨度日期区间时（比如跨好几个月）会导致结束日期点到完全不
+        # 相干的月份去，查出来的数据跟手动筛选对不上号。这里改成左右面板
+        # 各自独立翻页到目标月份。
+        _navigate_panel_to_month(page, _RIGHT_PANEL, end_year, end_month)
         _click_day(page, _RIGHT_PANEL, end_year, end_month, end_day)
 
     confirm_button = page.locator(_OK_BTN)
@@ -122,13 +125,6 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
     wait_settle(page)
 
 
-def month_before(year: int, month: int) -> tuple[int, int]:
-    """返回给定年月的上一个月，处理跨年（1月的上一个月是去年12月）。"""
-    if month == 1:
-        return year - 1, 12
-    return year, month - 1
-
-
 def _panel_month(page: Page, panel_selector: str) -> tuple[int, int]:
     panel = page.locator(panel_selector)
     year_text = panel.locator(".rocket-calendar-year-select").first.inner_text()
@@ -138,16 +134,20 @@ def _panel_month(page: Page, panel_selector: str) -> tuple[int, int]:
     return year, month
 
 
-def _navigate_to_left_month(page: Page, target_year: int, target_month: int) -> None:
-    for _ in range(36):
-        year, month = _panel_month(page, _LEFT_PANEL)
+def _navigate_panel_to_month(page: Page, panel_selector: str, target_year: int, target_month: int) -> None:
+    """把指定面板（左或右）独立翻页到目标年月——两个面板各自的翻页按钮
+    是分开的元素，必须限定在对应面板内点击，不能整页搜（否则永远点到
+    左面板那个）。"""
+    panel = page.locator(panel_selector)
+    for _ in range(120):
+        year, month = _panel_month(page, panel_selector)
         delta = (target_year - year) * 12 + (target_month - month)
         if delta == 0:
             return
-        button = page.locator(_PREV_MONTH_BTN if delta < 0 else _NEXT_MONTH_BTN)
+        button = panel.locator(_PREV_MONTH_BTN if delta < 0 else _NEXT_MONTH_BTN)
         button.first.click()
         page.wait_for_timeout(150)
-    raise RuntimeError(f"日历翻页超过36次仍未到达目标月份 {target_year}-{target_month}，选择器可能已失效")
+    raise RuntimeError(f"日历翻页超过120次仍未到达目标月份 {target_year}-{target_month}，选择器可能已失效")
 
 
 def _click_day(page: Page, panel_selector: str, year: int, month: int, day: int) -> None:
@@ -166,11 +166,26 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     内容只有一个箭头图标、没有文字——文字只在 title 属性里，get_by_role
     ("button", ...) 或者文字匹配天生找不到，之前一直只抓了第一页，是个真实
     bug。是否还有下一页看 aria-disabled 属性，不是靠 is_enabled()。
+
+    实测发现"点下一页"不完全可靠：翻页太快有时会被网站限流/报网络错误，
+    点击其实没有真正翻页，但 aria-disabled 依旧是 false，如果不校验页面
+    内容是否真的变了，就会在原地反复抓同一页，导致同一条违规记录被重复
+    收录好几次（220 条里真正不重复的只有 50 条，就是这个原因）。这里在
+    翻页前后各记一次"本页第一行的签名"，点击后如果签名没变就重试几次，
+    真的翻不动了就当作已经到底，不再继续抓（不整个报错崩掉）。另外加了
+    翻页前的小停顿和总页数上限，避免限流触发时死循环刷屏。
     """
     rows: list[ViolationRow] = []
+    seen: set[tuple[str, str, str]] = set()
 
-    while True:
-        rows.extend(_parse_current_page_rows(page))
+    for _ in range(500):
+        page_rows = _parse_current_page_rows(page)
+        before_signature = _page_signature(page_rows)
+        for row in page_rows:
+            key = (row.spu_id, row.violation_type, row.violation_detail)
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
 
         next_item = page.locator(_NEXT_PAGE_ITEM)
         if next_item.count() == 0:
@@ -178,10 +193,23 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
         if next_item.first.get_attribute("aria-disabled") == "true":
             break
 
-        next_item.first.locator("a").click()
-        wait_settle(page)
+        for attempt in range(3):
+            page.wait_for_timeout(400)
+            next_item.first.locator("a").click()
+            wait_settle(page)
+            after_signature = _page_signature(_parse_current_page_rows(page))
+            if after_signature != before_signature:
+                break
+        else:
+            # 翻页按钮没禁用，但连续 3 次点击后页面内容都没变——大概率是
+            # 网络错误/限流卡住了，不再继续翻页，把已经抓到的先返回。
+            break
 
     return rows
+
+
+def _page_signature(rows: list[ViolationRow]) -> tuple[str, ...]:
+    return tuple(f"{r.spu_id}|{r.violation_type}" for r in rows)
 
 
 def _parse_current_page_rows(page: Page) -> list[ViolationRow]:
