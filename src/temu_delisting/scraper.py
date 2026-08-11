@@ -44,6 +44,7 @@ _RIGHT_PANEL = ".rocket-calendar-range-right"
 _PREV_MONTH_BTN = ".rocket-calendar-prev-month-btn"
 _NEXT_MONTH_BTN = ".rocket-calendar-next-month-btn"
 _OK_BTN = ".rocket-calendar-ok-btn"
+_TOTAL_TEXT = ".rocket-pagination-total-text"
 
 
 @dataclass
@@ -95,6 +96,13 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
     _click_day(page, _LEFT_PANEL, start_year, start_month, start_day)
     logger.info(f"[scraper] 已点击左面板起始日 {start_year}-{start_month}-{start_day}")
 
+    # 起始日点完立刻点结束日，之前两次点击之间零间隔——怀疑这个日历组件
+    # 内部"选起点 -> 选终点"这个状态切换需要一点反应时间，点太快在某些
+    # 机器上可能被当成"重新选起点"而不是"选终点"，导致最终提交的区间不对
+    # （这类问题只在部分同事的电脑上出现过，本机没复现，只能先加个保险
+    # 停顿，具体是不是这个原因还要看后续实测日志）。
+    page.wait_for_timeout(400)
+
     if (end_year, end_month) == (start_year, start_month):
         # 起止同一个月，两次点击都在左面板里完成，不用碰右面板
         _click_day(page, _LEFT_PANEL, end_year, end_month, end_day)
@@ -109,10 +117,17 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
         _click_day(page, _RIGHT_PANEL, end_year, end_month, end_day)
         logger.info(f"[scraper] 已点击右面板结束日 {end_year}-{end_month}-{end_day}")
 
+    # 点完终点日期，给日历组件一点时间把内部选中区间状态更新完，再去点
+    # 「确定」——不然「确定」可能提交的是还没更新完的旧状态。
+    page.wait_for_timeout(400)
+
     confirm_button = page.locator(_OK_BTN)
     if confirm_button.count():
+        is_disabled = confirm_button.first.get_attribute("disabled") is not None
+        if is_disabled:
+            logger.error("[scraper] 日历「确定」按钮当前是禁用状态，日期区间可能没有选完整")
         confirm_button.first.click()
-        logger.info("[scraper] 已点击日历「确定」按钮")
+        logger.info(f"[scraper] 已点击日历「确定」按钮（点击前 disabled={is_disabled}）")
     else:
         logger.warning("[scraper] 未找到日历「确定」按钮，跳过点击")
 
@@ -211,6 +226,12 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     真的触发时陷入死循环刷屏。
     """
     logger = get_logger()
+    expected_total = _read_total_count(page)
+    if expected_total is not None:
+        logger.info(f"[scraper] 页面显示筛选后共 {expected_total} 条数据")
+    else:
+        logger.warning("[scraper] 没能读到页面上「共X条数据」的总数文字，跳过数量校验")
+
     rows: list[ViolationRow] = []
     seen: set[tuple[str, str, str]] = set()
 
@@ -264,7 +285,23 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             break
 
     logger.info(f"[scraper] 翻页结束，共抓取 {len(rows)} 条去重后的违规记录")
+    if expected_total is not None and len(rows) != expected_total:
+        logger.error(
+            f"[scraper] 抓取数量对不上：页面显示共 {expected_total} 条，实际抓到 {len(rows)} 条，"
+            "可能存在漏抓、多抓，或去重误删了本来不同但文字相同的记录"
+        )
     return rows
+
+
+def _read_total_count(page: Page) -> int | None:
+    """读页面上「共153条数据」这行文字，作为校验用的期望总数——如果最后
+    抓到的数量跟这个对不上，日志里能第一时间看出来，不用靠人工数。"""
+    total_locator = page.locator(_TOTAL_TEXT)
+    if total_locator.count() == 0:
+        return None
+    text = total_locator.first.inner_text()
+    digits = re.sub(r"\D", "", text)
+    return int(digits) if digits else None
 
 
 def _page_signature(rows: list[ViolationRow]) -> tuple[str, ...]:
