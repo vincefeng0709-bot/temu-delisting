@@ -152,10 +152,28 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
         except PlaywrightTimeoutError:
             logger.error("[scraper] 日历弹窗始终未关闭（15+15秒都超时），继续往下走，筛选可能没生效")
 
+    # 关键诊断点：直接读触发框自己显示的"开始日期 ~ 结束日期"文字，看日历
+    # 组件内部到底有没有真的记住我们点的日期。如果这里显示的就已经是错的
+    # /默认的，说明问题出在点日期格子那一步（组件没接收到点击）；如果这里
+    # 显示是对的，但最终查出来的数据还是不对，说明问题出在"查询"这一步
+    # 没把这个值真正带出去——这两种情况要改的代码完全不一样，不看这个会
+    # 一直瞎猜。
+    displayed_range = _read_trigger_displayed_range(page)
+    logger.info(f"[scraper] 点「查询」前，日历触发框显示的区间是：{displayed_range}")
+
     page.get_by_role("button", name=loose_text("查询")).first.click()
     logger.info("[scraper] 已点击「查询」按钮")
     wait_settle(page)
     logger.info("[scraper] 查询后页面已 settle")
+
+
+def _read_trigger_displayed_range(page: Page) -> str:
+    inputs = page.locator(_DATE_TRIGGER).locator(".rocket-calendar-range-picker-input")
+    if inputs.count() < 2:
+        return "（没找到触发框里的两个日期输入框，选择器可能已失效）"
+    start_value = inputs.nth(0).input_value()
+    end_value = inputs.nth(1).input_value()
+    return f"{start_value} ~ {end_value}"
 
 
 def _panel_month(page: Page, panel_selector: str) -> tuple[int, int]:
