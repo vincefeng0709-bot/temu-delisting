@@ -161,10 +161,43 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
     displayed_range = _read_trigger_displayed_range(page)
     logger.info(f"[scraper] 点「查询」前，日历触发框显示的区间是：{displayed_range}")
 
+    # 实测发现日历本身是选对了的（触发框显示的日期是对的），但查出来的结果
+    # 还是跟没筛选一样——问题出在这里：点"查询"之后，真正的筛选请求还没
+    # 返回、表格还没重新渲染，我们就已经在读数据了。wait_settle 靠
+    # "networkidle" 判断"网络安静了"，但这个站点背景一直有轮询类请求，网络
+    # 可能从来没真正安静过，wait_settle 等满 8 秒就直接放行——如果这一次
+    # 查询请求恰好比 8 秒还慢（比如网络延迟更高的电脑），我们读到的其实是
+    # 点查询前那一刻的旧内容（对这个页面来说，旧内容长得就跟"没筛选"一样，
+    # 所以看起来像是"筛选没生效"）。
+    #
+    # 改成：点查询前先记一次总数（这时候还是筛选前的旧总数，通常就是不筛选
+    # 时的默认总数），点完查询后轮询这个总数有没有变化，变了才认为查询真的
+    # 生效了；一直不变就多等几次、每次都记日志，方便确认这个猜测对不对。
+    baseline_total = _read_total_count(page)
+    logger.info(f"[scraper] 点「查询」前的总数（预期是筛选前的旧值）：{baseline_total}")
+
     page.get_by_role("button", name=loose_text("查询")).first.click()
     logger.info("[scraper] 已点击「查询」按钮")
     wait_settle(page)
-    logger.info("[scraper] 查询后页面已 settle")
+
+    for attempt in range(6):
+        current_total = _read_total_count(page)
+        if current_total != baseline_total:
+            logger.info(
+                f"[scraper] 查询后总数已从 {baseline_total} 变为 {current_total}，判定筛选已生效"
+            )
+            break
+        logger.warning(
+            f"[scraper] 查询后总数仍是 {current_total}（跟点查询前一样），"
+            f"筛选可能还没生效，多等一下再检查（第 {attempt + 1} 次）"
+        )
+        page.wait_for_timeout(1500)
+        wait_settle(page)
+    else:
+        logger.error(
+            f"[scraper] 连续检查 6 次后总数始终是 {current_total}，跟点查询前一样——"
+            "日期筛选很可能真的没生效（也有可能是巧合，筛选前后总数刚好相同）"
+        )
 
 
 def _read_trigger_displayed_range(page: Page) -> str:
