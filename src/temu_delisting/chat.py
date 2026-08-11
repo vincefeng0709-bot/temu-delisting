@@ -130,8 +130,21 @@ def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: 
     dialog.get_by_role("button", name=loose_text("申请下架")).click()
 
 
-def wait_for_delist_confirmation(page: Page, skc_id: str, timeout_ms: int) -> ChatResult:
-    """轮询聊天记录，直到客服给出针对这个 SKC 的结论性回复，或超时。
+def count_delist_replies(page: Page, skc_id: str) -> int:
+    """数一下聊天记录里目前已经有几条这个 SKC 的结论性回复。
+
+    在提交下架申请之前先调一次记下"起点"，等回复时只认"比起点多出来的"，
+    避免把聊天历史里这个 SKC 更早以前（甚至是本工具第一次接入前、人工
+    客服时代留下）的旧回复误判成这次申请的回复——客服对话是跟账号绑定在
+    服务端的，重开窗口/换个 SPU 都不会清空，旧记录会一直留在滚动条里。
+    """
+    return page.get_by_text(f"【SKC ID: {skc_id}】").count()
+
+
+def wait_for_delist_confirmation(
+    page: Page, skc_id: str, timeout_ms: int, baseline_reply_count: int = 0
+) -> ChatResult:
+    """轮询聊天记录，直到客服给出针对这个 SKC 的**新**结论性回复，或超时。
 
     客服的结论性回复不是只有"该商品已下架"这一种说法——还见过"该商品还未
     发布到任何站点，暂时无法操作下架"这类其他结论。这些回复格式统一是
@@ -140,6 +153,10 @@ def wait_for_delist_confirmation(page: Page, skc_id: str, timeout_ms: int) -> Ch
     干等到超时，处理多个 SKC 时白白浪费很多时间。现在改成：只要出现这个
     SKC 的结论性回复就立刻停止等待，再看回复内容里有没有"已下架"来判断
     是成功还是失败。
+
+    baseline_reply_count 是提交申请前 count_delist_replies() 的结果——只有
+    数量比这个起点多，才认为是这次申请的新回复，不会被聊天历史里同一个
+    SKC 更早以前的旧回复误判成"刚刚已经处理完了"。
 
     另外还要识别"该商品已在您的上次咨询后处理成功"这种重复申请提示弹窗
     （不是聊天气泡，是残留没关掉的弹窗），这个也算成功。
@@ -154,7 +171,7 @@ def wait_for_delist_confirmation(page: Page, skc_id: str, timeout_ms: int) -> Ch
                 status="success", detail=f"重复申请：{ALREADY_PROCESSED_TEXT}（视为已下架成功）"
             )
 
-        if reply_locator.count() > 0:
+        if reply_locator.count() > baseline_reply_count:
             full_text = reply_locator.last.locator("xpath=ancestor::*[self::div][1]").inner_text()
             if any(keyword in full_text for keyword in DELISTED_KEYWORDS):
                 return ChatResult(status="success", detail=full_text)

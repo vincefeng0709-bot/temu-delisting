@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from temu_delisting import accounts
 from temu_delisting.config import load_settings
+from temu_delisting.logging_setup import setup_logging
 from temu_delisting.store import open_store
 
 from .._version import __version__
@@ -225,6 +226,7 @@ class MainWindow(QMainWindow):
             return
 
         settings = load_settings(account_id=account_id)
+        setup_logging(settings.log_dir)
 
         self.start_scan_button.setEnabled(False)
         self.start_apply_button.setEnabled(False)
@@ -278,6 +280,7 @@ class MainWindow(QMainWindow):
             return
 
         settings = load_settings(account_id=account_id)
+        setup_logging(settings.log_dir)
 
         with open_store(settings.db_path) as store:
             confirmed_count = len(

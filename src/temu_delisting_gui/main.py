@@ -33,9 +33,9 @@ def _log_startup_banner() -> None:
 
 
 def main() -> None:
-    # 日志文件按进程启动时的默认账号定，这个 logger 是全局单例，进程存活期间
-    # 只初始化一次（见 logging_setup.py），账号中途切换不会重新指向新账号的
-    # 日志目录——这是当前的已知简化，不是 bug。
+    # 启动时先按默认账号初始化一次日志，实际开始扫描/下架时 main_window.py
+    # 会用当前选中账号重新调一次 setup_logging，日志会跟着切到那个账号的
+    # 目录下（不会一直写在启动时的默认账号里）。
     setup_logging(load_settings().log_dir)
     _log_startup_banner()
 

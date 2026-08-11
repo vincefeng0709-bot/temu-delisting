@@ -83,6 +83,7 @@ def delist_one_skc(
     （见 delist_spu 里的 chat.open_chat_session 调用），这里只负责
     "自助工具 -> 商品下架"这一段，不会重新打开/关闭客服面板。"""
     delist_reason = random.choice(settings.delist_reasons)
+    baseline_reply_count = chat.count_delist_replies(page, skc_id)
 
     if pause_before_chat:
         page.pause()
@@ -96,7 +97,8 @@ def delist_one_skc(
         return outcome
 
     result = chat.wait_for_delist_confirmation(
-        page, skc_id, timeout_ms=settings.chat_timeout_seconds * 1000
+        page, skc_id, timeout_ms=settings.chat_timeout_seconds * 1000,
+        baseline_reply_count=baseline_reply_count,
     )
     outcome = SkcOutcome(skc_id=skc_id, status=result.status, detail=result.detail)
     store.record_skc_result(skc_id, spu_id, batch_id, result.status, delist_reason, result.detail)

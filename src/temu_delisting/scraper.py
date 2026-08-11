@@ -12,8 +12,9 @@ URL 是实测确认过的真实地址（2026-08 联调时用 explore 命令走�
 - 弹窗容器：.rocket-calendar-picker-container
 - 左/右两个月份面板：.rocket-calendar-range-left / .rocket-calendar-range-right
 - 每个面板的年/月文字：.rocket-calendar-year-select / .rocket-calendar-month-select
-- 翻页按钮（全局唯一，点一下左右两个面板会一起挪一个月）：
-  .rocket-calendar-prev-month-btn / .rocket-calendar-next-month-btn
+- 翻页按钮：.rocket-calendar-prev-month-btn / .rocket-calendar-next-month-btn
+  ——左右面板各自有一份，互相独立、不联动，必须限定在对应面板内点击
+  （实测跨月选日期时若共用一个全局按钮会导致翻错面板）
 - 日期格子：td[title="2026年8月9日"] 这种格式，属性里年月日都是完整中文，
   同一个面板内不会重复；但左右两个面板在月末/月初交界处可能各自出现一次
   同一天（比如8月31日会同时出现在左边8月面板末尾和右边9月面板开头），
@@ -23,6 +24,7 @@ URL 是实测确认过的真实地址（2026-08 联调时用 explore 命令走�
 """
 from __future__ import annotations
 
+import random
 import re
 from dataclasses import dataclass
 
@@ -172,13 +174,18 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     内容是否真的变了，就会在原地反复抓同一页，导致同一条违规记录被重复
     收录好几次（220 条里真正不重复的只有 50 条，就是这个原因）。这里在
     翻页前后各记一次"本页第一行的签名"，点击后如果签名没变就重试几次，
-    真的翻不动了就当作已经到底，不再继续抓（不整个报错崩掉）。另外加了
-    翻页前的小停顿和总页数上限，避免限流触发时死循环刷屏。
+    真的翻不动了就当作已经到底，不再继续抓（不整个报错崩掉）。
+
+    另外，日期跨度大、需要翻很多页时最容易触发网站的网络错误/限流——同事
+    实测反馈过这个现象。固定 400ms 的翻页间隔节奏太规律、太快，不像人在
+    操作，这里改成随机化的停顿（600~1400ms），每翻 8 页左右再额外多歇一
+    小段时间，尽量降低触发限流的概率；同时保留总页数上限兜底，避免限流
+    真的触发时陷入死循环刷屏。
     """
     rows: list[ViolationRow] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for _ in range(500):
+    for page_index in range(500):
         page_rows = _parse_current_page_rows(page)
         before_signature = _page_signature(page_rows)
         for row in page_rows:
@@ -193,8 +200,11 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
         if next_item.first.get_attribute("aria-disabled") == "true":
             break
 
+        if page_index > 0 and page_index % 8 == 0:
+            page.wait_for_timeout(random.randint(2500, 4000))
+
         for attempt in range(3):
-            page.wait_for_timeout(400)
+            page.wait_for_timeout(random.randint(600, 1400))
             next_item.first.locator("a").click()
             wait_settle(page)
             after_signature = _page_signature(_parse_current_page_rows(page))

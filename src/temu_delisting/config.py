@@ -65,7 +65,7 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
         # 所以不需要留 60 秒这么长的兜底时间；调短之后真遇到卡住的情况也能
         # 更快标成"需要人工跟进"，不用干等一分钟。
         chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "15")),
-        chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "8")),
+        chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "5")),
         known_delist_types=violation_config.get("known_delist_types", []),
         delist_reasons=violation_config.get("delist_reasons", []),
     )
