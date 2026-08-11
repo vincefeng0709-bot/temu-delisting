@@ -11,10 +11,10 @@ import threading
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDateEdit,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -82,25 +82,37 @@ class MainWindow(QMainWindow):
         self.account_combo = QComboBox()
         self.account_combo.setMinimumWidth(220)
 
+        self.rename_account_button = QPushButton("重命名")
+        self.rename_account_button.clicked.connect(self._on_rename_account_clicked)
+
+        self.delete_account_button = QPushButton("删除")
+        self.delete_account_button.setObjectName("dangerButton")
+        self.delete_account_button.clicked.connect(self._on_delete_account_clicked)
+
         self.add_account_button = QPushButton("+ 添加账号")
         self.add_account_button.clicked.connect(self._on_add_account_clicked)
 
         layout.addWidget(label)
         layout.addWidget(self.account_combo, stretch=1)
+        layout.addWidget(self.rename_account_button)
+        layout.addWidget(self.delete_account_button)
         layout.addWidget(self.add_account_button)
         return layout
 
     def _reload_accounts(self) -> None:
         self.account_combo.clear()
         account_list = accounts.list_accounts()
-        if not account_list:
-            self.account_combo.addItem("尚未添加账号", userData=None)
-            self.start_scan_button.setEnabled(False)
-            return
+        has_accounts = bool(account_list)
 
-        for account in account_list:
-            self.account_combo.addItem(account.display_name, userData=account.id)
-        self.start_scan_button.setEnabled(True)
+        if not has_accounts:
+            self.account_combo.addItem("尚未添加账号", userData=None)
+        else:
+            for account in account_list:
+                self.account_combo.addItem(account.display_name, userData=account.id)
+
+        self.start_scan_button.setEnabled(has_accounts)
+        self.rename_account_button.setEnabled(has_accounts)
+        self.delete_account_button.setEnabled(has_accounts)
 
     def _on_add_account_clicked(self) -> None:
         dialog = LoginWizardDialog(self)
@@ -110,6 +122,45 @@ class MainWindow(QMainWindow):
             if index >= 0:
                 self.account_combo.setCurrentIndex(index)
             self._log(f"【添加账号】已成功添加账号「{dialog.created_account.display_name}」。")
+
+    def _on_rename_account_clicked(self) -> None:
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            return
+        current_name = self.account_combo.currentText()
+        new_name, ok = QInputDialog.getText(
+            self, "重命名账号", "新的账号/店铺名称：", text=current_name
+        )
+        if not ok or not new_name.strip():
+            return
+
+        accounts.rename_account(account_id, new_name.strip())
+        self._reload_accounts()
+        index = self.account_combo.findData(account_id)
+        if index >= 0:
+            self.account_combo.setCurrentIndex(index)
+        self._log(f"【重命名账号】「{current_name}」→「{new_name.strip()}」")
+
+    def _on_delete_account_clicked(self) -> None:
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            return
+        display_name = self.account_combo.currentText()
+
+        reply = QMessageBox.question(
+            self,
+            "删除账号",
+            f"确定要删除账号「{display_name}」吗？\n这会连同它的登录信息、历史记录一起删掉，不可恢复。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        accounts.delete_account(account_id)
+        self._reload_accounts()
+        self._current_batch_id = None
+        self._log(f"【删除账号】已删除「{display_name}」。")
 
     # -- 日期范围 --------------------------------------------------------
 
@@ -121,12 +172,14 @@ class MainWindow(QMainWindow):
         self.start_date_edit = QDateEdit(yesterday)
         self.start_date_edit.setCalendarPopup(True)
         self.start_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.start_date_edit.setMinimumWidth(130)
         layout.addWidget(self.start_date_edit)
 
         layout.addWidget(QLabel("结束日期："))
         self.end_date_edit = QDateEdit(yesterday)
         self.end_date_edit.setCalendarPopup(True)
         self.end_date_edit.setDisplayFormat("yyyy-MM-dd")
+        self.end_date_edit.setMinimumWidth(130)
         layout.addWidget(self.end_date_edit)
 
         layout.addStretch(1)
@@ -146,9 +199,6 @@ class MainWindow(QMainWindow):
         self.start_apply_button.setEnabled(False)
         self.start_apply_button.clicked.connect(self._on_start_apply_clicked)
 
-        self.dry_run_checkbox = QCheckBox("仅测试（不会真正提交下架申请）")
-        self.dry_run_checkbox.setChecked(True)
-
         self.stop_button = QPushButton("停止")
         self.stop_button.setObjectName("dangerButton")
         self.stop_button.setEnabled(False)
@@ -156,7 +206,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(self.start_scan_button)
         layout.addWidget(self.start_apply_button)
-        layout.addWidget(self.dry_run_checkbox)
         layout.addStretch(1)
         layout.addWidget(self.stop_button)
         return layout
@@ -229,7 +278,6 @@ class MainWindow(QMainWindow):
             return
 
         settings = load_settings(account_id=account_id)
-        dry_run = self.dry_run_checkbox.isChecked()
 
         with open_store(settings.db_path) as store:
             confirmed_count = len(
@@ -241,16 +289,15 @@ class MainWindow(QMainWindow):
             )
             return
 
-        if not dry_run:
-            reply = QMessageBox.question(
-                self,
-                "确认下架",
-                f"即将对 {confirmed_count} 个已确认的商品执行真实下架申请，此操作不可撤销，确定继续吗？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
-            )
-            if reply != QMessageBox.Yes:
-                return
+        reply = QMessageBox.question(
+            self,
+            "确认下架",
+            f"即将对 {confirmed_count} 个已确认的商品执行真实下架申请，此操作不可撤销，确定继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
 
         self.start_scan_button.setEnabled(False)
         self.start_apply_button.setEnabled(False)
@@ -260,14 +307,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         self.progress_bar.setFormat("准备开始…")
         self.statusBar().showMessage("下架处理中…")
-        self._log(
-            f"【开始下架】批次 {self._current_batch_id}，共 {confirmed_count} 个商品"
-            f"{'（仅测试，不会真正提交）' if dry_run else ''}"
-        )
+        self._log(f"【开始下架】批次 {self._current_batch_id}，共 {confirmed_count} 个商品")
 
         self._stop_event = threading.Event()
         self._apply_worker = ApplyWorker(
-            settings, self._current_batch_id, dry_run, self._stop_event.is_set
+            settings, self._current_batch_id, False, self._stop_event.is_set
         )
         self._apply_worker.log_line.connect(self._log)
         self._apply_worker.progress_changed.connect(self._on_apply_progress)

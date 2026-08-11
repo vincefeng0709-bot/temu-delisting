@@ -60,3 +60,37 @@ def test_migrates_legacy_flat_layout_into_default_account(data_root):
 
 def test_get_account_returns_none_for_unknown_id(data_root):
     assert accounts.get_account("nope") is None
+
+
+def test_rename_account_keeps_id_and_data(data_root):
+    account = accounts.create_account("旧名字")
+    paths = accounts.account_paths(account.id)
+    paths.storage_state_path.write_text("{}")
+
+    renamed = accounts.rename_account(account.id, "新名字")
+
+    assert renamed.id == account.id
+    assert renamed.display_name == "新名字"
+    assert paths.storage_state_path.exists()  # 数据没动
+    assert [a.display_name for a in accounts.list_accounts()] == ["新名字"]
+
+
+def test_rename_unknown_account_raises(data_root):
+    with pytest.raises(ValueError):
+        accounts.rename_account("nope", "随便")
+
+
+def test_delete_account_removes_registry_entry_and_data(data_root):
+    account = accounts.create_account("待删除")
+    paths = accounts.account_paths(account.id)
+    paths.storage_state_path.write_text("{}")
+
+    accounts.delete_account(account.id)
+
+    assert accounts.list_accounts() == []
+    assert not paths.root.exists()
+
+
+def test_delete_unknown_account_raises(data_root):
+    with pytest.raises(ValueError):
+        accounts.delete_account("nope")

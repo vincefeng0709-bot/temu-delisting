@@ -26,8 +26,9 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-from playwright.sync_api import Page
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
 
+from .browser import wait_settle
 from .config import Settings
 from .text_match import loose_text
 
@@ -56,7 +57,7 @@ def goto_violation_list(page: Page, settings: Settings) -> None:
 
     # 跨域名跳转首次可能弹出"确认授权并前往"这类一次性同意弹窗
     _dismiss_auth_dialog_if_present(page)
-    page.wait_for_load_state("networkidle")
+    wait_settle(page)
 
 
 def _dismiss_auth_dialog_if_present(page: Page, timeout_ms: int = 3000) -> None:
@@ -100,8 +101,25 @@ def query_violations(page: Page, start_date: str, end_date: str) -> None:
     if confirm_button.count():
         confirm_button.first.click()
 
+    # 日历弹窗关闭有动画，点完"确定"不能立刻点"查询"——源码跑测试时靠
+    # SLOW_MO_MS 的操作间隔意外掩盖了这个时序问题；打包成 exe 后没有
+    # SLOW_MO_MS（没有 .env、默认是 0，全速跑），"查询"点得太早，日历弹窗
+    # 还没真正关掉/筛选条件还没生效，结果查出来的是没按时间筛选的默认列表。
+    # 这里显式等弹窗真正消失了再继续。超时时间给宽松点（网络代理/VPN 环境下
+    # 可能会更慢），而且哪怕真等不到"确认关闭"的信号，也不整个报错崩掉——
+    # 大概率弹窗其实已经视觉上关了，只是某个状态标记没按预期更新，继续往下
+    # 走总比直接失败强。
+    try:
+        page.locator(_POPUP).wait_for(state="hidden", timeout=15000)
+    except PlaywrightTimeoutError:
+        try:
+            page.keyboard.press("Escape")
+            page.locator(_POPUP).wait_for(state="hidden", timeout=15000)
+        except PlaywrightTimeoutError:
+            pass
+
     page.get_by_role("button", name=loose_text("查询")).first.click()
-    page.wait_for_load_state("networkidle")
+    wait_settle(page)
 
 
 def month_before(year: int, month: int) -> tuple[int, int]:
@@ -138,17 +156,30 @@ def _click_day(page: Page, panel_selector: str, year: int, month: int, day: int)
     cell.first.click()
 
 
+_NEXT_PAGE_ITEM = 'li[title="下一页"]'
+
+
 def parse_violation_rows(page: Page) -> list[ViolationRow]:
-    """解析违规列表表格，逐页翻页直到没有下一页。"""
+    """解析违规列表表格，逐页翻页直到没有下一页。
+
+    分页是自研的 rocket-pagination 组件，"下一页"是个 <li> 不是按钮，可见
+    内容只有一个箭头图标、没有文字——文字只在 title 属性里，get_by_role
+    ("button", ...) 或者文字匹配天生找不到，之前一直只抓了第一页，是个真实
+    bug。是否还有下一页看 aria-disabled 属性，不是靠 is_enabled()。
+    """
     rows: list[ViolationRow] = []
 
     while True:
         rows.extend(_parse_current_page_rows(page))
-        next_button = page.get_by_role("button", name=loose_text("下一页"))
-        if next_button.count() == 0 or not next_button.first.is_enabled():
+
+        next_item = page.locator(_NEXT_PAGE_ITEM)
+        if next_item.count() == 0:
             break
-        next_button.first.click()
-        page.wait_for_load_state("networkidle")
+        if next_item.first.get_attribute("aria-disabled") == "true":
+            break
+
+        next_item.first.locator("a").click()
+        wait_settle(page)
 
     return rows
 

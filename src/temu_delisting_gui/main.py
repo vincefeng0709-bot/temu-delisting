@@ -48,7 +48,9 @@ def main() -> None:
 
     style_path = RESOURCES_DIR / "style.qss"
     if style_path.exists():
-        app.setStyleSheet(style_path.read_text(encoding="utf-8"))
+        icons_dir = (RESOURCES_DIR / "icons").as_posix()
+        stylesheet = style_path.read_text(encoding="utf-8").replace("{ICONS_DIR}", icons_dir)
+        app.setStyleSheet(stylesheet)
 
     window = MainWindow()
     window.show()

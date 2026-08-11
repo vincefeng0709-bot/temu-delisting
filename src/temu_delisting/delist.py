@@ -8,6 +8,7 @@ from typing import Callable
 from playwright.sync_api import Page
 
 from . import chat
+from .browser import wait_settle
 from .config import Settings
 from .popups import dismiss_known_popups
 from .store import Store
@@ -25,7 +26,7 @@ class SkcOutcome:
 
 def goto_lifecycle_management(page: Page, settings: Settings) -> None:
     page.goto(LIFECYCLE_MANAGEMENT_URL, wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle")
+    wait_settle(page)
     dismiss_known_popups(page)
 
 
@@ -47,7 +48,7 @@ def query_spu(page: Page, spu_id: str) -> None:
     text_input.fill(spu_id)
 
     page.get_by_role("button", name=loose_text("查询")).first.click()
-    page.wait_for_load_state("networkidle")
+    wait_settle(page)
     dismiss_known_popups(page)
 
 

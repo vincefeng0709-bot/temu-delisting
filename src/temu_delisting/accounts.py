@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -144,6 +145,33 @@ def create_account(display_name: str) -> Account:
     _save_registry(entries)
     account_paths(account.id)  # 提前建好目录
     return account
+
+
+def rename_account(account_id: str, new_display_name: str) -> Account:
+    """只改显示名字，account_id 和数据目录都不变（目录是按 id 建的，跟
+    显示名字无关，改名不会动到任何登录态/数据库文件）。"""
+    entries = _load_registry()
+    for entry in entries:
+        if entry["id"] == account_id:
+            entry["display_name"] = new_display_name
+            _save_registry(entries)
+            return Account(**entry)
+    raise ValueError(f"找不到账号 {account_id}")
+
+
+def delete_account(account_id: str) -> None:
+    """从注册表里移除，并把这个账号的数据目录（登录态/数据库/导出/日志）
+    一起删掉——这是本地文件删除，不会影响 Temu 账号本身。调用方（GUI）
+    自己负责在删之前跟用户确认。"""
+    entries = _load_registry()
+    remaining = [e for e in entries if e["id"] != account_id]
+    if len(remaining) == len(entries):
+        raise ValueError(f"找不到账号 {account_id}")
+    _save_registry(remaining)
+
+    account_dir = _data_root() / "accounts" / account_id
+    if account_dir.exists():
+        shutil.rmtree(account_dir)
 
 
 def ensure_default_account() -> Account:

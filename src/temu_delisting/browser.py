@@ -5,9 +5,27 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from playwright.sync_api import BrowserContext, Page, Playwright, sync_playwright
+from playwright.sync_api import (
+    BrowserContext,
+    Page,
+    Playwright,
+    TimeoutError as PlaywrightTimeoutError,
+    sync_playwright,
+)
 
 from .config import Settings
+
+
+def wait_settle(page: Page, timeout_ms: int = 8000) -> None:
+    """等页面"网络安静下来"，但不当成硬性条件——很多页面背后有轮询/心跳类的
+    后台请求，网络永远不会真正"安静"，用 wait_for_load_state("networkidle")
+    卡死等满默认的30秒直接超时报错是常见坑。这里给一个短一些的等待窗口，
+    超时了就直接放行继续（大概率该加载的内容已经加载完了），不整个流程
+    崩掉。"""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except PlaywrightTimeoutError:
+        pass
 
 
 @contextmanager

@@ -52,12 +52,19 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
         password=os.getenv("TEMU_PASSWORD", ""),
         headless=os.getenv("HEADLESS", "false").strip().lower() in {"1", "true", "yes"},
         browser_channel=os.getenv("BROWSER_CHANNEL", "chrome").strip(),
-        slow_mo_ms=int(os.getenv("SLOW_MO_MS", "0")),
+        # 默认给个小的保险停顿，不是 0——这个站点好几处 UI（日历弹窗关闭、
+        # 客服面板）本身有动画/异步状态更新，操作间完全没有停顿容易踩时序
+        # 坑。打包成 exe 的场景不会有 .env，全靠这个默认值兜底。
+        slow_mo_ms=int(os.getenv("SLOW_MO_MS", "150")),
         db_path=paths.db_path,
         storage_state_path=paths.storage_state_path,
         exports_dir=paths.exports_dir,
         log_dir=paths.log_dir,
-        chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "60")),
+        # 客服"结论性回复"现在靠 wait_for_delist_confirmation 里更宽松的
+        # 匹配规则（不再只认"已下架"这一种说法），大部分时候几秒内就能等到，
+        # 所以不需要留 60 秒这么长的兜底时间；调短之后真遇到卡住的情况也能
+        # 更快标成"需要人工跟进"，不用干等一分钟。
+        chat_timeout_seconds=int(os.getenv("CHAT_TIMEOUT_SECONDS", "15")),
         chat_cooldown_seconds=int(os.getenv("CHAT_COOLDOWN_SECONDS", "8")),
         known_delist_types=violation_config.get("known_delist_types", []),
         delist_reasons=violation_config.get("delist_reasons", []),

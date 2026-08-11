@@ -131,17 +131,21 @@ def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: 
 
 
 def wait_for_delist_confirmation(page: Page, skc_id: str, timeout_ms: int) -> ChatResult:
-    """轮询聊天记录，直到出现下架确认，或超时。
+    """轮询聊天记录，直到客服给出针对这个 SKC 的结论性回复，或超时。
 
-    两种"成功"信号都要识别：
-    1. 正常情况：聊天记录里出现包含该 SKC ID 和"已下架"关键字的回复
-    2. 重复申请：这个 SKC 之前已经真实处理成功过，客服会弹一个
-       "该商品已在您的上次咨询后处理成功"的提示弹窗（不是聊天气泡），
-       这也算成功，要把弹窗关掉（点"确认"）避免挡住后面的操作
+    客服的结论性回复不是只有"该商品已下架"这一种说法——还见过"该商品还未
+    发布到任何站点，暂时无法操作下架"这类其他结论。这些回复格式统一是
+    "【SKC ID: xxx】：您好，..."开头，不管具体结论是什么。之前只认"已下架"
+    这一个关键字，遇到其他结论时明明客服已经回复了，代码却识别不出来，只能
+    干等到超时，处理多个 SKC 时白白浪费很多时间。现在改成：只要出现这个
+    SKC 的结论性回复就立刻停止等待，再看回复内容里有没有"已下架"来判断
+    是成功还是失败。
+
+    另外还要识别"该商品已在您的上次咨询后处理成功"这种重复申请提示弹窗
+    （不是聊天气泡，是残留没关掉的弹窗），这个也算成功。
     """
-    delisted_confirmation = page.get_by_text(skc_id).locator(
-        f"xpath=ancestor::*[self::div][1]//*[contains(text(), '{DELISTED_KEYWORDS[0]}')]"
-    )
+    reply_marker = f"【SKC ID: {skc_id}】"
+    reply_locator = page.get_by_text(reply_marker)
 
     deadline = time.monotonic() + timeout_ms / 1000
     while time.monotonic() < deadline:
@@ -149,9 +153,13 @@ def wait_for_delist_confirmation(page: Page, skc_id: str, timeout_ms: int) -> Ch
             return ChatResult(
                 status="success", detail=f"重复申请：{ALREADY_PROCESSED_TEXT}（视为已下架成功）"
             )
-        if delisted_confirmation.count() > 0:
-            text = delisted_confirmation.first.inner_text()
-            return ChatResult(status="success", detail=text)
+
+        if reply_locator.count() > 0:
+            full_text = reply_locator.last.locator("xpath=ancestor::*[self::div][1]").inner_text()
+            if any(keyword in full_text for keyword in DELISTED_KEYWORDS):
+                return ChatResult(status="success", detail=full_text)
+            return ChatResult(status="failed", detail=full_text)
+
         page.wait_for_timeout(1000)
 
     return ChatResult(status="timeout_needs_human", detail="等待客服确认回复超时")
