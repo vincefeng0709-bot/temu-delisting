@@ -33,6 +33,7 @@ from temu_delisting.store import open_store
 
 from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
+from .log_viewer import LogViewerDialog
 from .login_wizard import LoginWizardDialog
 from .review_table import ReviewTableWidget
 
@@ -93,12 +94,25 @@ class MainWindow(QMainWindow):
         self.add_account_button = QPushButton("+ 添加账号")
         self.add_account_button.clicked.connect(self._on_add_account_clicked)
 
+        self.view_log_button = QPushButton("查看日志")
+        self.view_log_button.clicked.connect(self._on_view_log_clicked)
+
         layout.addWidget(label)
         layout.addWidget(self.account_combo, stretch=1)
         layout.addWidget(self.rename_account_button)
         layout.addWidget(self.delete_account_button)
         layout.addWidget(self.add_account_button)
+        layout.addWidget(self.view_log_button)
         return layout
+
+    def _on_view_log_clicked(self) -> None:
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            QMessageBox.information(self, "查看日志", "请先添加一个账号。")
+            return
+        settings = load_settings(account_id=account_id)
+        dialog = LogViewerDialog(settings.log_dir, self)
+        dialog.exec()
 
     def _reload_accounts(self) -> None:
         self.account_combo.clear()
