@@ -297,7 +297,15 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             before_signature = _page_signature(page_rows)
             new_count = 0
             for row in page_rows:
-                key = (row.spu_id, row.violation_type, row.violation_detail)
+                # 去重 key 加上 violation_status（第5列）——之前只用
+                # spu_id+违规类型+违规详情三项，这三项其实是模板化的官方
+                # 话术，两条真实不同的记录（比如同一个 SPU 下不同 SKC 各自
+                # 违规）完全可能撞出一模一样的文字，被误判成"重复读到的同
+                # 一行"而丢掉（实测一次干净的翻页、没有任何超时/重试，还是
+                # 152/153，差的这一条就是这么被误杀的）。加上状态列能降低
+                # 撞车概率，但没法保证 100% 不撞——这个站没有暴露真正唯一
+                # 的行 ID，内容去重终归有极限。
+                key = (row.spu_id, row.violation_type, row.violation_detail, row.violation_status)
                 if key not in seen:
                     seen.add(key)
                     rows.append(row)
