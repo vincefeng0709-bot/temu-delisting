@@ -28,7 +28,7 @@ import random
 import re
 from dataclasses import dataclass
 
-from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError
+from playwright.sync_api import Error as PlaywrightError, Page, TimeoutError as PlaywrightTimeoutError
 
 from .browser import wait_settle
 from .config import Settings
@@ -264,27 +264,22 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     bug。是否还有下一页看 aria-disabled 属性，不是靠 is_enabled()。
 
     实测发现"点下一页"不完全可靠：翻页太快有时会被网站限流/报网络错误，
-    点击其实没有真正翻页，但 aria-disabled 依旧是 false，如果不校验页面
-    内容是否真的变了，就会在原地反复抓同一页，导致同一条违规记录被重复
-    收录好几次（220 条里真正不重复的只有 50 条，就是这个原因）。这里在
-    翻页前后各记一次"本页第一行的签名"，点击后如果签名没变就重试几次，
-    真的翻不动了就当作已经到底，不再继续抓（不整个报错崩掉）。
+    网页上能看到"Network Timeout, Please Try Again Later"这个提示。这里
+    校验页面内容是否真的变了（前后签名对比），点击后签名没变、或者变了但
+    是空的（网络超时导致这页数据没加载出来），都当成一次失败的尝试，用
+    指数退避重试（1、2、4、8、16秒……封顶20秒）——实测连续失败时每次间隔
+    都差不多，说明是服务端真需要一段冷却时间，不是随机小卡顿，固定的短
+    间隔重试再多次也没用。
 
-    另外，日期跨度大、需要翻很多页时最容易触发网站的网络错误/限流——同事
-    实测反馈过这个现象，网页上能看到"Network Timeout, Please Try Again
-    Later"这个提示。正常翻页用随机化的停顿（第一次约1~1.8秒），每翻 8 页
-    左右再额外多歇一小段时间，尽量降低触发限流的概率；真翻页失败时改成
-    指数退避（1、2、4、8、16秒……封顶20秒）——实测连续失败时每次间隔都
-    差不多，说明是服务端真需要冷却时间，不是随机小卡顿，固定的短间隔
-    重试再多次也没用，得等得更久才行；同时保留总页数上限兜底，避免限流
-    真的触发时陷入死循环刷屏。
+    另外，日期跨度大、页数多的时候越往后越容易触发限流（同事实测反馈过），
+    翻页间隔按页码递增（早期页面正常速度，后面自动放慢），比全程固定同一
+    个速度更接近人的操作节奏，也降低越翻越容易触发限流的概率。
 
-    还有一种之前没处理好的情况：点"下一页"之后页面内容确实变了（不是卡在
-    原地），但变成了**空的**——这不是真的翻到底了，是网络超时导致这一页
-    的数据没加载出来。之前把"内容变了"直接当成"翻页成功"，空页面 + 后面
-    紧跟着 aria-disabled=true，就被误判成"正常到底"，实际上是网络错误
-    截断了抓取（136 条只抓到 110 条就是这么漏的）。现在把"变了但是空的"
-    也当成一次失败的尝试，继续重试，不会当成合法的结束状态接受。
+    最后一点很重要：翻页过程中如果连接本身出问题了（比如"Target page,
+    context or browser has been closed"这种），之前会直接抛异常把整个
+    扫描炸掉，连前面已经抓到的一大批数据也一起丢了——这个代价比"少抓几页"
+    大得多。现在这类连接层面的致命错误会被接住，把已经抓到的部分先返回，
+    不会因为最后几页出问题就把前面白跑的都赔进去。
     """
     logger = get_logger()
     expected_total = _read_total_count(page)
@@ -296,74 +291,78 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     rows: list[ViolationRow] = []
     seen: set[tuple[str, str, str]] = set()
 
-    for page_index in range(500):
-        page_rows = _parse_current_page_rows_safe(page)
-        before_signature = _page_signature(page_rows)
-        new_count = 0
-        for row in page_rows:
-            key = (row.spu_id, row.violation_type, row.violation_detail)
-            if key not in seen:
-                seen.add(key)
-                rows.append(row)
-                new_count += 1
-        logger.info(
-            f"[scraper] 第 {page_index + 1} 页：本页 {len(page_rows)} 行，"
-            f"新增 {new_count} 条，累计 {len(rows)} 条"
-        )
+    try:
+        for page_index in range(500):
+            page_rows = _parse_current_page_rows_safe(page)
+            before_signature = _page_signature(page_rows)
+            new_count = 0
+            for row in page_rows:
+                key = (row.spu_id, row.violation_type, row.violation_detail)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+                    new_count += 1
+            logger.info(
+                f"[scraper] 第 {page_index + 1} 页：本页 {len(page_rows)} 行，"
+                f"新增 {new_count} 条，累计 {len(rows)} 条"
+            )
 
-        next_item = page.locator(_NEXT_PAGE_ITEM)
-        if next_item.count() == 0:
-            logger.info("[scraper] 找不到「下一页」元素，停止翻页")
-            break
-        if next_item.first.get_attribute("aria-disabled") == "true":
-            logger.info("[scraper] 「下一页」已禁用（aria-disabled=true），已到最后一页")
-            break
-
-        if page_index > 0 and page_index % 8 == 0:
-            page.wait_for_timeout(random.randint(2500, 4000))
-
-        advanced = False
-        for attempt in range(8):
-            # 指数退避：第一次失败大概率是偶尔的小卡顿，隔个一两秒重试就行；
-            # 但实测发现真撞上限流/网络超时时，连续 8 次都卡在同一页、每次
-            # 间隔都差不多——这不是随机抖动，是服务端真的需要一段冷却时间，
-            # 固定 1~2 秒的间隔完全等不到它恢复。改成指数增长的等待时间
-            # （封顶 20 秒），第一次还是很快，后面失败得越多就等得越久，
-            # 给服务端真正喘口气的机会。
-            backoff_ms = min(1000 * (2**attempt), 20000) + random.randint(0, 800)
-            page.wait_for_timeout(backoff_ms)
-            next_item.first.locator("a").click()
-            wait_settle(page)
-            after_rows = _parse_current_page_rows_safe(page)
-            after_signature = _page_signature(after_rows)
-            if after_signature != before_signature and after_rows:
-                advanced = True
-                if attempt > 0:
-                    logger.warning(f"[scraper] 第 {page_index + 1} 页翻页重试 {attempt} 次后才成功")
+            next_item = page.locator(_NEXT_PAGE_ITEM)
+            if next_item.count() == 0:
+                logger.info("[scraper] 找不到「下一页」元素，停止翻页")
                 break
-            if after_signature != before_signature and not after_rows:
-                # 页面内容"变了"（跟之前不一样），但变成了空的——这不是真的
-                # 翻到底了，是翻页点击成功但这一页的数据没加载出来（网络超时/
-                # 限流，网页上会弹"Network Timeout"提示）。之前把这种情况
-                # 误判成"已经到最后一页"直接停了，导致大跨度扫描漏抓一大截
-                # （比如 136 条只抓到 110 条）。这里当成一次失败的翻页尝试，
-                # 继续重试，不要就这么接受一个空页面。
+            if next_item.first.get_attribute("aria-disabled") == "true":
+                logger.info("[scraper] 「下一页」已禁用（aria-disabled=true），已到最后一页")
+                break
+
+            # 翻页越往后越容易撞限流，间隔跟着页码往上加（每页多加约200ms，
+            # 封顶多加8秒），不是全程一个速度；每翻6页再额外多歇一下，歇的
+            # 时长也跟着翻页轮次往上涨。
+            base_delay_ms = random.randint(1000, 2000) + min(page_index * 200, 8000)
+            if page_index > 0 and page_index % 6 == 0:
+                extra_rest_ms = random.randint(3000, 5000) + min((page_index // 6) * 1000, 10000)
+                page.wait_for_timeout(extra_rest_ms)
+
+            advanced = False
+            for attempt in range(8):
+                # 指数退避：第一次失败大概率是偶尔的小卡顿，隔一两秒重试就行；
+                # 真撞上限流/网络超时时，固定短间隔重试再多次也没用，得等得
+                # 更久才行。
+                backoff_ms = base_delay_ms if attempt == 0 else min(1000 * (2**attempt), 20000)
+                page.wait_for_timeout(backoff_ms + random.randint(0, 800))
+                next_item.first.locator("a").click()
+                wait_settle(page)
+                after_rows = _parse_current_page_rows_safe(page)
+                after_signature = _page_signature(after_rows)
+                if after_signature != before_signature and after_rows:
+                    advanced = True
+                    if attempt > 0:
+                        logger.warning(f"[scraper] 第 {page_index + 1} 页翻页重试 {attempt} 次后才成功")
+                    break
+                if after_signature != before_signature and not after_rows:
+                    # 页面内容"变了"（跟之前不一样），但变成了空的——这不是
+                    # 真的翻到底了，是翻页点击成功但这一页的数据没加载出来
+                    # （网络超时/限流）。之前把这种情况误判成"已经到最后一页"
+                    # 直接停了，导致大跨度扫描漏抓一大截。这里当成一次失败的
+                    # 翻页尝试，继续重试，不要就这么接受一个空页面。
+                    logger.warning(
+                        f"[scraper] 第 {page_index + 1} 页翻页后内容为空（很可能是网络超时/限流导致"
+                        f"没加载出来），第 {attempt + 1} 次尝试失败，继续重试"
+                    )
+                    continue
                 logger.warning(
-                    f"[scraper] 第 {page_index + 1} 页翻页后内容为空（很可能是网络超时/限流导致"
-                    f"没加载出来），第 {attempt + 1} 次尝试失败，继续重试"
+                    f"[scraper] 第 {page_index + 1} 页点击「下一页」第 {attempt + 1} 次后页面内容未变化"
                 )
-                continue
-            logger.warning(
-                f"[scraper] 第 {page_index + 1} 页点击「下一页」第 {attempt + 1} 次后页面内容未变化"
-            )
-        if not advanced:
-            # 翻页按钮没禁用，但连续多次点击后页面内容都没变——大概率是
-            # 网络错误/限流卡住了，不再继续翻页，把已经抓到的先返回。
-            logger.error(
-                f"[scraper] 第 {page_index + 1} 页连续 8 次翻页都没有变化/加载不出来，"
-                f"判定为卡住/限流，停止翻页（可能导致抓取数量比实际少）"
-            )
-            break
+            if not advanced:
+                logger.error(
+                    f"[scraper] 第 {page_index + 1} 页连续 8 次翻页都没有变化/加载不出来，"
+                    f"判定为卡住/限流，停止翻页（可能导致抓取数量比实际少）"
+                )
+                break
+    except PlaywrightError as exc:
+        # 连接层面的致命错误（比如浏览器/页面被关掉了）——不再往上抛，把
+        # 已经抓到的部分先保住，好过整批数据全部丢掉重来。
+        logger.error(f"[scraper] 翻页过程中连接出现致命错误，提前结束（保留已抓到的部分）：{exc}")
 
     logger.info(f"[scraper] 翻页结束，共抓取 {len(rows)} 条去重后的违规记录")
     if expected_total is not None and len(rows) != expected_total:
