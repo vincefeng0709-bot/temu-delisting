@@ -82,7 +82,7 @@ def convert_cookie_editor_export(cookie_editor_json_path: Path) -> dict:
         return convert_cookie_editor_export_text(f.read())
 
 
-def _load_existing(storage_state_path: Path) -> dict:
+def load_existing_storage_state(storage_state_path: Path) -> dict:
     if not storage_state_path.exists():
         return {"cookies": [], "origins": []}
     with open(storage_state_path, "r", encoding="utf-8") as f:
@@ -116,7 +116,7 @@ def import_cookies_text(cookie_editor_json_text: str, storage_state_path: Path) 
     自己控制何时落盘。
     """
     new_state = convert_cookie_editor_export_text(cookie_editor_json_text)
-    existing_state = _load_existing(storage_state_path)
+    existing_state = load_existing_storage_state(storage_state_path)
     result = merge_cookie_states(existing_state, new_state)
     write_storage_state(result, storage_state_path)
     return len(result["cookies"])

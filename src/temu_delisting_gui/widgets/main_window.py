@@ -1,25 +1,35 @@
-"""主窗口：账号选择器 + 日期范围 + 扫描/下架/停止按钮 + 进度条 + 实时日志区，
+"""主窗口：账号选择器 + 日期范围 + 扫描/下架/停止按钮 + 任务列表 + 实时日志区，
 外加一个"审核清单"标签页。
 
-扫描、下架都在各自的后台线程（ScanWorker/ApplyWorker）里跑，不卡界面；
-扫描完成会自动切到审核清单页；下架支持中途"停止"（等当前商品处理完再停，
-不会中途打断正在填的表单）。
+支持多账号并发运行：切到另一个账号，可以在原来那个账号还在跑扫描/下架的
+同时，给这个新账号也开一个任务——每个任务是独立的后台线程（ScanWorker/
+ApplyWorker），各自开自己的浏览器窗口，互不影响。任务列表显示每个任务的
+账号、类型、状态，下架类任务可以单独停止（只停这一个，不影响其他任务）。
+同一个账号同时只能有一个任务在跑（避免同一份登录态/数据库被两边同时写）。
+
+"审核清单"页只有一份，跟着当前选中的账号走——切账号会自动刷新成那个账号
+最近一次扫描的结果（如果有的话）。
 """
 from __future__ import annotations
 
 import threading
+import uuid
+from dataclasses import dataclass
+from functools import partial
 
 from PySide6.QtCore import QDate
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
-    QProgressBar,
     QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QVBoxLayout,
     QWidget,
@@ -27,7 +37,6 @@ from PySide6.QtWidgets import (
 
 from temu_delisting import accounts
 from temu_delisting.config import load_settings
-from temu_delisting.logging_setup import setup_logging
 from temu_delisting.store import open_store
 
 from .._version import __version__
@@ -37,17 +46,28 @@ from .log_viewer import LogViewerDialog
 from .login_wizard import LoginWizardDialog
 from .review_table import ReviewTableWidget
 
+_TASK_COLUMNS = ["账号", "类型", "状态", "操作"]
+
+
+@dataclass
+class JobEntry:
+    job_id: str
+    account_id: str
+    account_name: str
+    kind: str  # "scan" | "apply"
+    row: int
+    stop_event: threading.Event | None = None
+
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle(f"Temu 违规商品下架助手 v{__version__}")
-        self.resize(960, 680)
+        self.resize(1000, 720)
 
-        self._scan_worker: ScanWorker | None = None
-        self._apply_worker: ApplyWorker | None = None
-        self._stop_event: threading.Event | None = None
-        self._current_batch_id: str | None = None
+        self._jobs: dict[str, JobEntry] = {}
+        self._workers: dict[str, object] = {}  # job_id -> ScanWorker/ApplyWorker（保活用，防止被垃圾回收）
+        self._batch_by_account: dict[str, str] = {}
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
@@ -71,7 +91,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(self._build_account_row())
         layout.addLayout(self._build_date_row())
         layout.addLayout(self._build_action_row())
-        layout.addWidget(self._build_progress_bar())
+        layout.addWidget(self._build_task_list())
         layout.addWidget(self._build_log_panel(), stretch=1)
         return tab
 
@@ -83,9 +103,13 @@ class MainWindow(QMainWindow):
         label = QLabel("当前账号：")
         self.account_combo = QComboBox()
         self.account_combo.setMinimumWidth(220)
+        self.account_combo.currentIndexChanged.connect(self._on_account_selection_changed)
 
         self.rename_account_button = QPushButton("编辑")
         self.rename_account_button.clicked.connect(self._on_rename_account_clicked)
+
+        self.update_login_button = QPushButton("更新登录信息")
+        self.update_login_button.clicked.connect(self._on_update_login_clicked)
 
         self.delete_account_button = QPushButton("删除")
         self.delete_account_button.setObjectName("dangerButton")
@@ -100,10 +124,40 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         layout.addWidget(self.account_combo, stretch=1)
         layout.addWidget(self.rename_account_button)
+        layout.addWidget(self.update_login_button)
         layout.addWidget(self.delete_account_button)
         layout.addWidget(self.add_account_button)
         layout.addWidget(self.view_log_button)
         return layout
+
+    def _on_account_selection_changed(self) -> None:
+        self._update_action_buttons()
+        self._refresh_review_view_for_current_account()
+
+    def _refresh_review_view_for_current_account(self) -> None:
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            return
+        batch_id = self._batch_by_account.get(account_id)
+        if not batch_id:
+            return
+        settings = load_settings(account_id=account_id)
+        with open_store(settings.db_path) as store:
+            suggestions = store.list_suggestions(batch_id)
+        self.review_table.load(settings, batch_id, suggestions)
+
+    def _on_update_login_clicked(self) -> None:
+        account_id = self.account_combo.currentData()
+        if not account_id:
+            QMessageBox.information(self, "更新登录信息", "请先添加一个账号。")
+            return
+        account = accounts.get_account(account_id)
+        if account is None:
+            return
+
+        dialog = LoginWizardDialog(self, existing_account=account)
+        if dialog.exec() == LoginWizardDialog.Accepted:
+            self._log(f"【更新登录信息】账号「{account.display_name}」的登录信息已更新。")
 
     def _on_view_log_clicked(self) -> None:
         account_id = self.account_combo.currentData()
@@ -115,6 +169,8 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _reload_accounts(self) -> None:
+        current_id = self.account_combo.currentData()
+        self.account_combo.blockSignals(True)
         self.account_combo.clear()
         account_list = accounts.list_accounts()
         has_accounts = bool(account_list)
@@ -124,10 +180,15 @@ class MainWindow(QMainWindow):
         else:
             for account in account_list:
                 self.account_combo.addItem(account.display_name, userData=account.id)
+            index = self.account_combo.findData(current_id)
+            if index >= 0:
+                self.account_combo.setCurrentIndex(index)
+        self.account_combo.blockSignals(False)
 
-        self.start_scan_button.setEnabled(has_accounts)
         self.rename_account_button.setEnabled(has_accounts)
+        self.update_login_button.setEnabled(has_accounts)
         self.delete_account_button.setEnabled(has_accounts)
+        self._update_action_buttons()
 
     def _on_add_account_clicked(self) -> None:
         dialog = LoginWizardDialog(self)
@@ -170,6 +231,12 @@ class MainWindow(QMainWindow):
             return
         display_name = self.account_combo.currentText()
 
+        if self._account_has_active_job(account_id):
+            QMessageBox.warning(
+                self, "删除账号", f"账号「{display_name}」还有任务在运行，不能删除，请等它跑完。"
+            )
+            return
+
         reply = QMessageBox.question(
             self,
             "删除账号",
@@ -181,8 +248,8 @@ class MainWindow(QMainWindow):
             return
 
         accounts.delete_account(account_id)
+        self._batch_by_account.pop(account_id, None)
         self._reload_accounts()
-        self._current_batch_id = None
         self._log(f"【删除账号】已删除「{display_name}」。")
 
     # -- 日期范围 --------------------------------------------------------
@@ -222,16 +289,27 @@ class MainWindow(QMainWindow):
         self.start_apply_button.setEnabled(False)
         self.start_apply_button.clicked.connect(self._on_start_apply_clicked)
 
-        self.stop_button = QPushButton("停止")
-        self.stop_button.setObjectName("dangerButton")
-        self.stop_button.setEnabled(False)
-        self.stop_button.clicked.connect(self._on_stop_clicked)
-
         layout.addWidget(self.start_scan_button)
         layout.addWidget(self.start_apply_button)
         layout.addStretch(1)
-        layout.addWidget(self.stop_button)
         return layout
+
+    # -- 并发控制 --------------------------------------------------------
+
+    def _account_has_active_job(self, account_id: str) -> bool:
+        return any(job.account_id == account_id for job in self._jobs.values())
+
+    def _update_action_buttons(self) -> None:
+        account_id = self.account_combo.currentData()
+        has_accounts = bool(accounts.list_accounts())
+        busy = bool(account_id) and self._account_has_active_job(account_id)
+        has_batch = bool(account_id) and account_id in self._batch_by_account
+
+        self.start_scan_button.setEnabled(has_accounts and not busy)
+        self.start_apply_button.setEnabled(has_accounts and not busy and has_batch)
+
+    def _on_worker_log(self, account_name: str, message: str) -> None:
+        self._log(f"[{account_name}] {message}")
 
     # -- 扫描 --------------------------------------------------------
 
@@ -240,6 +318,9 @@ class MainWindow(QMainWindow):
         if not account_id:
             QMessageBox.information(self, "开始扫描", "请先添加一个账号。")
             return
+        if self._account_has_active_job(account_id):
+            QMessageBox.information(self, "开始扫描", "这个账号已经有任务在运行了，请等它完成。")
+            return
 
         start = self.start_date_edit.date().toString("yyyy-MM-dd")
         end = self.end_date_edit.date().toString("yyyy-MM-dd")
@@ -247,48 +328,50 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "开始扫描", "开始日期不能晚于结束日期。")
             return
 
+        account_name = self.account_combo.currentText()
         settings = load_settings(account_id=account_id)
-        setup_logging(settings.log_dir)
+        self._log(f"【开始扫描】账号「{account_name}」，日期 {start} ~ {end}")
 
-        self.start_scan_button.setEnabled(False)
-        self.start_apply_button.setEnabled(False)
-        self.add_account_button.setEnabled(False)
-        self.progress_bar.setRange(0, 0)  # 不确定进度，先转圈
-        self.progress_bar.setFormat("扫描中…")
-        self.statusBar().showMessage("扫描中…")
-        self._log(f"【开始扫描】账号「{self.account_combo.currentText()}」，日期 {start} ~ {end}")
+        job_id = uuid.uuid4().hex
+        row = self._add_task_row(account_name, "扫描")
+        self._jobs[job_id] = JobEntry(job_id, account_id, account_name, "scan", row)
 
-        self._scan_worker = ScanWorker(settings, start, end)
-        self._scan_worker.log_line.connect(self._log)
-        self._scan_worker.finished_ok.connect(self._on_scan_finished)
-        self._scan_worker.failed.connect(self._on_scan_failed)
-        self._scan_worker.start()
+        worker = ScanWorker(settings, start, end)
+        self._workers[job_id] = worker
+        worker.log_line.connect(partial(self._on_worker_log, account_name))
+        worker.finished_ok.connect(partial(self._on_scan_finished, job_id))
+        worker.failed.connect(partial(self._on_scan_failed, job_id))
+        worker.start()
 
-    def _on_scan_finished(self, result) -> None:
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(100)
-        self.progress_bar.setFormat(f"扫描完成，共 {result.row_count} 条")
-        self.statusBar().showMessage("扫描完成")
-        self.start_scan_button.setEnabled(True)
-        self.add_account_button.setEnabled(True)
+        self._update_action_buttons()
 
-        self._current_batch_id = result.batch_id
-        self.start_apply_button.setEnabled(True)
+    def _on_scan_finished(self, job_id: str, result) -> None:
+        job = self._jobs.pop(job_id, None)
+        self._workers.pop(job_id, None)
+        if job is None:
+            return
 
-        account_id = self.account_combo.currentData()
-        settings = load_settings(account_id=account_id)
-        self.review_table.load(settings, result.batch_id, result.suggestions)
-        self._tabs.setCurrentWidget(self.review_table)
+        self._set_task_status(job.row, f"完成，共 {result.row_count} 条")
+        self._batch_by_account[job.account_id] = result.batch_id
+        self._log(f"[{job.account_name}] 扫描完成，共 {result.row_count} 条")
 
-    def _on_scan_failed(self, message: str) -> None:
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("扫描失败")
-        self.statusBar().showMessage("扫描失败")
-        self.start_scan_button.setEnabled(True)
-        self.add_account_button.setEnabled(True)
-        self._log(f"【扫描失败】{message}")
-        QMessageBox.warning(self, "扫描失败", message)
+        if self.account_combo.currentData() == job.account_id:
+            settings = load_settings(account_id=job.account_id)
+            self.review_table.load(settings, result.batch_id, result.suggestions)
+            self._tabs.setCurrentWidget(self.review_table)
+
+        self._update_action_buttons()
+
+    def _on_scan_failed(self, job_id: str, message: str) -> None:
+        job = self._jobs.pop(job_id, None)
+        self._workers.pop(job_id, None)
+        if job is None:
+            return
+
+        self._set_task_status(job.row, "失败")
+        self._log(f"[{job.account_name}] 扫描失败：{message}")
+        QMessageBox.warning(self, "扫描失败", f"账号「{job.account_name}」：\n{message}")
+        self._update_action_buttons()
 
     # -- 下架 --------------------------------------------------------
 
@@ -297,17 +380,19 @@ class MainWindow(QMainWindow):
         if not account_id:
             QMessageBox.information(self, "开始下架", "请先添加一个账号。")
             return
-        if not self._current_batch_id:
+        if self._account_has_active_job(account_id):
+            QMessageBox.information(self, "开始下架", "这个账号已经有任务在运行了，请等它完成。")
+            return
+        batch_id = self._batch_by_account.get(account_id)
+        if not batch_id:
             QMessageBox.information(self, "开始下架", "请先扫描一次，并在「审核清单」页保存审核结果。")
             return
 
+        account_name = self.account_combo.currentText()
         settings = load_settings(account_id=account_id)
-        setup_logging(settings.log_dir)
 
         with open_store(settings.db_path) as store:
-            confirmed_count = len(
-                store.list_suggestions(self._current_batch_id, review_status="confirmed")
-            )
+            confirmed_count = len(store.list_suggestions(batch_id, review_status="confirmed"))
         if confirmed_count == 0:
             QMessageBox.information(
                 self, "开始下架", "这个批次没有已确认待下架的商品，请先在「审核清单」页确认并保存。"
@@ -317,55 +402,56 @@ class MainWindow(QMainWindow):
         reply = QMessageBox.question(
             self,
             "确认下架",
-            f"即将对 {confirmed_count} 个已确认的商品执行真实下架申请，此操作不可撤销，确定继续吗？",
+            f"即将对账号「{account_name}」的 {confirmed_count} 个已确认商品执行真实下架申请，"
+            "此操作不可撤销，确定继续吗？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if reply != QMessageBox.Yes:
             return
 
-        self.start_scan_button.setEnabled(False)
-        self.start_apply_button.setEnabled(False)
-        self.add_account_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.progress_bar.setRange(0, confirmed_count)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFormat("准备开始…")
-        self.statusBar().showMessage("下架处理中…")
-        self._log(f"【开始下架】批次 {self._current_batch_id}，共 {confirmed_count} 个商品")
+        self._log(f"【开始下架】账号「{account_name}」，批次 {batch_id}，共 {confirmed_count} 个商品")
 
-        self._stop_event = threading.Event()
-        self._apply_worker = ApplyWorker(
-            settings, self._current_batch_id, False, self._stop_event.is_set
-        )
-        self._apply_worker.log_line.connect(self._log)
-        self._apply_worker.progress_changed.connect(self._on_apply_progress)
-        self._apply_worker.finished_ok.connect(self._on_apply_finished)
-        self._apply_worker.failed.connect(self._on_apply_failed)
-        self._apply_worker.start()
+        job_id = uuid.uuid4().hex
+        row = self._add_task_row(account_name, "下架")
+        stop_event = threading.Event()
+        self._jobs[job_id] = JobEntry(job_id, account_id, account_name, "apply", row, stop_event)
+        self._add_stop_button(row, job_id)
 
-    def _on_apply_progress(self, current: int, total: int, spu_id: str) -> None:
-        self.progress_bar.setValue(current)
-        self.progress_bar.setFormat(f"处理中 {current}/{total}：SPU {spu_id}")
+        worker = ApplyWorker(settings, batch_id, False, stop_event.is_set)
+        self._workers[job_id] = worker
+        worker.log_line.connect(partial(self._on_worker_log, account_name))
+        worker.progress_changed.connect(partial(self._on_apply_progress, job_id))
+        worker.finished_ok.connect(partial(self._on_apply_finished, job_id, batch_id))
+        worker.failed.connect(partial(self._on_apply_failed, job_id))
+        worker.start()
 
-    def _on_apply_finished(self, result) -> None:
-        self.stop_button.setEnabled(False)
-        self.start_scan_button.setEnabled(True)
-        self.start_apply_button.setEnabled(True)
-        self.add_account_button.setEnabled(True)
-        self.statusBar().showMessage("下架处理完成" if not result.stopped_early else "已停止")
+        self._update_action_buttons()
+
+    def _on_apply_progress(self, job_id: str, current: int, total: int, spu_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is None:
+            return
+        self._set_task_status(job.row, f"处理中 {current}/{total}：SPU {spu_id}")
+
+    def _on_apply_finished(self, job_id: str, batch_id: str, result) -> None:
+        job = self._jobs.pop(job_id, None)
+        self._workers.pop(job_id, None)
+        if job is None:
+            return
 
         outcomes = result.all_skc_outcomes
         success = sum(1 for o in outcomes if o.status == "success")
         needs_follow_up = sum(1 for o in outcomes if o.status != "success")
         failed_spu_count = len(result.failed_spus)
 
-        self.progress_bar.setFormat(
-            f"{'已停止' if result.stopped_early else '处理完成'}：成功 {success}，需人工跟进 {needs_follow_up}"
-        )
+        status_prefix = "已停止" if result.stopped_early else "处理完成"
+        self._set_task_status(job.row, f"{status_prefix}：成功 {success}，需人工跟进 {needs_follow_up}")
+        self._clear_stop_button(job.row)
 
         summary_lines = [
-            f"批次：{self._current_batch_id}",
+            f"账号：{job.account_name}",
+            f"批次：{batch_id}",
             f"SPU 整体处理成功：{len(result.spu_results) - failed_spu_count}",
             f"SPU 整体处理失败：{failed_spu_count}",
             f"SKC 下架成功：{success}",
@@ -376,34 +462,64 @@ class MainWindow(QMainWindow):
         self._log("【下架完成】" + "；".join(summary_lines))
 
         QMessageBox.information(self, "下架处理完成", "\n".join(summary_lines))
+        self._update_action_buttons()
 
-    def _on_apply_failed(self, message: str) -> None:
-        self.stop_button.setEnabled(False)
-        self.start_scan_button.setEnabled(True)
-        self.start_apply_button.setEnabled(True)
-        self.add_account_button.setEnabled(True)
-        self.progress_bar.setFormat("下架失败")
-        self.statusBar().showMessage("下架失败")
-        self._log(f"【下架失败】{message}")
-        QMessageBox.warning(self, "下架失败", message)
+    def _on_apply_failed(self, job_id: str, message: str) -> None:
+        job = self._jobs.pop(job_id, None)
+        self._workers.pop(job_id, None)
+        if job is None:
+            return
 
-    def _on_stop_clicked(self) -> None:
-        if self._stop_event is not None and self._apply_worker is not None:
-            self._stop_event.set()
-            self.stop_button.setEnabled(False)
-            self._log("【停止】已收到停止请求，会在当前商品处理完后停下来（不会中途打断正在提交的表单）。")
-        else:
-            self._log("【停止】当前没有正在执行的下架任务。")
+        self._set_task_status(job.row, "失败")
+        self._clear_stop_button(job.row)
+        self._log(f"[{job.account_name}] 下架失败：{message}")
+        QMessageBox.warning(self, "下架失败", f"账号「{job.account_name}」：\n{message}")
+        self._update_action_buttons()
 
-    # -- 进度条 --------------------------------------------------------
+    def _on_stop_job_clicked(self, job_id: str) -> None:
+        job = self._jobs.get(job_id)
+        if job is None or job.stop_event is None:
+            return
+        job.stop_event.set()
+        self._set_task_status(job.row, "正在停止…")
+        self._log(f"[{job.account_name}] 已收到停止请求，会在当前商品处理完后停下来（不会中途打断正在提交的表单）。")
+        button = self.task_table.cellWidget(job.row, 3)
+        if button is not None:
+            button.setEnabled(False)
 
-    def _build_progress_bar(self) -> QProgressBar:
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(True)
-        self.progress_bar.setFormat("等待开始")
-        return self.progress_bar
+    # -- 任务列表 --------------------------------------------------------
+
+    def _build_task_list(self) -> QTableWidget:
+        self.task_table = QTableWidget(0, len(_TASK_COLUMNS))
+        self.task_table.setHorizontalHeaderLabels(_TASK_COLUMNS)
+        self.task_table.verticalHeader().setVisible(False)
+        self.task_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
+        self.task_table.setMaximumHeight(160)
+        return self.task_table
+
+    def _add_task_row(self, account_name: str, kind_label: str) -> int:
+        row = self.task_table.rowCount()
+        self.task_table.insertRow(row)
+        self.task_table.setItem(row, 0, QTableWidgetItem(account_name))
+        self.task_table.setItem(row, 1, QTableWidgetItem(kind_label))
+        self.task_table.setItem(row, 2, QTableWidgetItem("运行中"))
+        self.task_table.scrollToBottom()
+        return row
+
+    def _set_task_status(self, row: int, status: str) -> None:
+        item = self.task_table.item(row, 2)
+        if item is not None:
+            item.setText(status)
+
+    def _add_stop_button(self, row: int, job_id: str) -> None:
+        button = QPushButton("停止")
+        button.setObjectName("dangerButton")
+        button.clicked.connect(partial(self._on_stop_job_clicked, job_id))
+        self.task_table.setCellWidget(row, 3, button)
+
+    def _clear_stop_button(self, row: int) -> None:
+        self.task_table.removeCellWidget(row, 3)
 
     # -- 日志区 --------------------------------------------------------
 

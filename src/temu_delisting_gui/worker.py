@@ -16,7 +16,7 @@ from PySide6.QtCore import QThread, Signal
 
 from temu_delisting import actions
 from temu_delisting.config import Settings
-from temu_delisting.logging_setup import get_logger
+from temu_delisting.logging_setup import get_logger, setup_logging
 from temu_delisting.store import open_store
 
 from .errors import friendly_message
@@ -34,6 +34,9 @@ class ScanWorker(QThread):
         self.end_date = end_date
 
     def run(self) -> None:
+        # setup_logging 必须在这个工作线程里调用（不是主线程），日志才会按
+        # "这个线程自己"分开记，多个账号并发跑的时候不会互相把日志文件挤掉。
+        setup_logging(self.settings.log_dir)
         try:
             with open_store(self.settings.db_path) as store:
                 result = actions.run_scan(
@@ -65,6 +68,7 @@ class ApplyWorker(QThread):
         self.should_stop = should_stop
 
     def run(self) -> None:
+        setup_logging(self.settings.log_dir)
         try:
             with open_store(self.settings.db_path) as store:
                 result = actions.run_apply(

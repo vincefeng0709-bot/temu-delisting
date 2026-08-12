@@ -33,9 +33,10 @@ def _log_startup_banner() -> None:
 
 
 def main() -> None:
-    # 启动时先按默认账号初始化一次日志，实际开始扫描/下架时 main_window.py
-    # 会用当前选中账号重新调一次 setup_logging，日志会跟着切到那个账号的
-    # 目录下（不会一直写在启动时的默认账号里）。
+    # 这里是主线程，只用来打启动横幅。真正扫描/下架时，每个后台线程
+    # （ScanWorker/ApplyWorker）会在自己线程里各自调用一次 setup_logging，
+    # 日志按线程分开记，多个账号并发跑互不干扰，也不用担心把这里的日志
+    # 文件"挤下线"（见 logging_setup.py）。
     setup_logging(load_settings().log_dir)
     _log_startup_banner()
 

@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from temu_delisting import accounts
 from temu_delisting.session_import import (
     convert_cookie_editor_export_text,
+    load_existing_storage_state,
     merge_cookie_states,
     write_storage_state,
 )
@@ -39,9 +40,13 @@ COOKIE_EDITOR_STORE_URL = (
 
 
 class LoginWizardDialog(QDialog):
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, existing_account: accounts.Account | None = None) -> None:
+        """existing_account 传了就是"更新登录信息"模式：不新建账号，只把
+        新导出的 Cookie 合并进这个已有账号的登录态文件，账号名字/店铺名称
+        都不在这里改（改名走"编辑"那个对话框）。"""
         super().__init__(parent)
-        self.setWindowTitle("添加账号")
+        self._existing_account = existing_account
+        self.setWindowTitle("更新登录信息" if existing_account else "添加账号")
         self.setMinimumWidth(560)
 
         self._cookie_state_seller: dict | None = None
@@ -51,8 +56,11 @@ class LoginWizardDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
 
-        layout.addLayout(self._build_name_row())
-        layout.addLayout(self._build_mall_name_row())
+        if existing_account is None:
+            layout.addLayout(self._build_name_row())
+            layout.addLayout(self._build_mall_name_row())
+        else:
+            layout.addWidget(QLabel(f"正在为账号「{existing_account.display_name}」更新登录信息"))
         layout.addWidget(self._section_label("① 登录卖家中心"))
         layout.addLayout(self._build_open_login_row())
         layout.addWidget(self._section_label("② 安装 Cookie 导出工具（装过了可跳过）"))
@@ -77,7 +85,8 @@ class LoginWizardDialog(QDialog):
 
         layout.addLayout(self._build_bottom_row())
 
-        self.name_input.textChanged.connect(self._update_finish_enabled)
+        if existing_account is None:
+            self.name_input.textChanged.connect(self._update_finish_enabled)
         self._update_finish_enabled()
 
     # -- 小工具 ----------------------------------------------------------
@@ -169,7 +178,7 @@ class LoginWizardDialog(QDialog):
         cancel_button = QPushButton("取消")
         cancel_button.clicked.connect(self.reject)
 
-        self.finish_button = QPushButton("完成并保存")
+        self.finish_button = QPushButton("更新并保存" if self._existing_account else "完成并保存")
         self.finish_button.setObjectName("primaryButton")
         self.finish_button.clicked.connect(self._on_finish)
 
@@ -205,25 +214,40 @@ class LoginWizardDialog(QDialog):
         return state
 
     def _update_finish_enabled(self) -> None:
+        name_ready = self._existing_account is not None or bool(self.name_input.text().strip())
         ready = bool(
-            self.name_input.text().strip()
+            name_ready
             and self._cookie_state_seller is not None
             and self._cookie_state_agent is not None
         )
         self.finish_button.setEnabled(ready)
 
     def _on_finish(self) -> None:
-        display_name = self.name_input.text().strip()
-        if not display_name or self._cookie_state_seller is None or self._cookie_state_agent is None:
+        if self._cookie_state_seller is None or self._cookie_state_agent is None:
             return
 
-        merged = merge_cookie_states({"cookies": [], "origins": []}, self._cookie_state_seller)
-        merged = merge_cookie_states(merged, self._cookie_state_agent)
+        merged_new = merge_cookie_states({"cookies": [], "origins": []}, self._cookie_state_seller)
+        merged_new = merge_cookie_states(merged_new, self._cookie_state_agent)
+
+        if self._existing_account is not None:
+            # 更新模式：合并进这个已有账号现有的登录态文件，不新建账号、
+            # 不动账号名字/店铺名称。
+            paths = accounts.account_paths(self._existing_account.id)
+            existing_state = load_existing_storage_state(paths.storage_state_path)
+            merged = merge_cookie_states(existing_state, merged_new)
+            write_storage_state(merged, paths.storage_state_path)
+            self.created_account = self._existing_account
+            self.accept()
+            return
+
+        display_name = self.name_input.text().strip()
+        if not display_name:
+            return
 
         mall_name = self.mall_name_input.text().strip()
         account = accounts.create_account(display_name, mall_name=mall_name)
         paths = accounts.account_paths(account.id)
-        write_storage_state(merged, paths.storage_state_path)
+        write_storage_state(merged_new, paths.storage_state_path)
 
         self.created_account = account
         self.accept()
