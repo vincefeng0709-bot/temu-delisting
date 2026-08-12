@@ -64,3 +64,22 @@ node.exe driver 占了大头）。把整个 `TemuDelisting` 文件夹压缩成 z
   在打包版里跑）
 - 还没在第二台"干净"电脑（没装过 Python/这个项目源码）上验证过，只在本机
   用一个空的 data 目录模拟了"全新环境"
+
+## 分机端（temu_delisting_satellite）单独打包
+
+这是给店铺那边的小机器用的独立小程序，不含 Playwright，体积和打包速度都
+小很多，跟主程序是两个完全独立的 exe，要分开打包、分开发。
+
+```powershell
+.venv\Scripts\Activate.ps1
+pyinstaller packaging\temu_delisting_satellite.spec --distpath dist --workpath build --noconfirm
+```
+
+产物在 `dist\TemuDelistingSatellite\` 下，同样是整个文件夹压缩成 zip 发过去。
+
+目标机器的前提条件：
+- **不需要装 Chrome、不需要登录 Temu**——分机端只是往共享文件夹里写/读
+  JSON 文件，不碰浏览器自动化。
+- 首次运行会自动创建 `data\satellite_config.json`（记住共享文件夹路径、
+  上次用的账号）和 `data\satellite_jobs.json`（提交过的任务历史），删掉
+  这两个文件只是丢失"记忆"，不影响已经提交出去的任务。
