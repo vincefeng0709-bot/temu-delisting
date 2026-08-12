@@ -270,13 +270,43 @@ class MainWindow(QMainWindow):
 
     # -- 任务历史 / 结果轮询 ---------------------------------------------------
 
-    def _build_history_table(self) -> QTableWidget:
+    def _build_history_table(self) -> QWidget:
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(QLabel("提交记录："))
+        header_row.addStretch(1)
+        clear_button = QPushButton("一键清空记录")
+        clear_button.clicked.connect(self._on_clear_history_clicked)
+        header_row.addWidget(clear_button)
+        layout.addLayout(header_row)
+
         self.history_table = QTableWidget(0, len(_HISTORY_COLUMNS))
         self.history_table.setHorizontalHeaderLabels(_HISTORY_COLUMNS)
         self.history_table.verticalHeader().setVisible(False)
         self.history_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.history_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.Stretch)
-        return self.history_table
+        layout.addWidget(self.history_table)
+
+        return section
+
+    def _on_clear_history_clicked(self) -> None:
+        if not self._jobs:
+            return
+        pending_count = sum(1 for job in self._jobs if job.result is None)
+        message = f"确定要清空全部 {len(self._jobs)} 条提交记录吗？这只是清空这台机器上的本地记录，不影响已经提交出去的任务本身。"
+        if pending_count:
+            message += f"\n\n其中有 {pending_count} 条还没查到结果，清空后这台机器将不再自动追踪它们的进度。"
+        reply = QMessageBox.question(self, "清空记录", message, QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        self._jobs = []
+        save_job_history(self._jobs)
+        self._render_history_table()
 
     def _render_history_table(self) -> None:
         self.history_table.setRowCount(len(self._jobs))

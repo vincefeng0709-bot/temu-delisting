@@ -574,14 +574,35 @@ class MainWindow(QMainWindow):
 
     # -- 任务列表 --------------------------------------------------------
 
-    def _build_task_list(self) -> QTableWidget:
+    def _build_task_list(self) -> QWidget:
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(QLabel("任务列表："))
+        header_row.addStretch(1)
+        clear_button = QPushButton("一键清空")
+        clear_button.clicked.connect(self._on_clear_task_list_clicked)
+        header_row.addWidget(clear_button)
+        layout.addLayout(header_row)
+
         self.task_table = QTableWidget(0, len(_TASK_COLUMNS))
         self.task_table.setHorizontalHeaderLabels(_TASK_COLUMNS)
         self.task_table.verticalHeader().setVisible(False)
         self.task_table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch)
         self.task_table.setMaximumHeight(160)
-        return self.task_table
+        layout.addWidget(self.task_table)
+
+        return section
+
+    def _on_clear_task_list_clicked(self) -> None:
+        if self._jobs:
+            QMessageBox.information(self, "清空任务列表", "还有任务在运行，等它们都跑完之后再清空。")
+            return
+        self.task_table.setRowCount(0)
 
     def _add_task_row(self, account_name: str, kind_label: str) -> int:
         row = self.task_table.rowCount()
@@ -608,12 +629,27 @@ class MainWindow(QMainWindow):
 
     # -- 日志区 --------------------------------------------------------
 
-    def _build_log_panel(self) -> QPlainTextEdit:
+    def _build_log_panel(self) -> QWidget:
+        section = QWidget()
+        layout = QVBoxLayout(section)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.addWidget(QLabel("运行日志："))
+        header_row.addStretch(1)
+        clear_button = QPushButton("一键清空")
+        clear_button.clicked.connect(lambda: self.log_panel.clear())
+        header_row.addWidget(clear_button)
+        layout.addLayout(header_row)
+
         self.log_panel = QPlainTextEdit()
         self.log_panel.setObjectName("logPanel")
         self.log_panel.setReadOnly(True)
-        self._log("欢迎使用 Temu 违规商品下架助手。")
-        return self.log_panel
+        layout.addWidget(self.log_panel)
+
+        self._log("欢迎使用 Temu 违规商品下架助手。清空这里的日志只影响这个窗口的显示，磁盘上的日志文件不会受影响。")
+        return section
 
     def _log(self, message: str) -> None:
         self.log_panel.appendPlainText(message)
