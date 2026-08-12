@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
@@ -29,6 +30,8 @@ from temu_delisting import accounts
 from temu_delisting.browser import migrate_storage_state_into_profile
 from temu_delisting.chrome_profile import open_login_window
 from temu_delisting.config import load_settings
+
+from ..profile_sharing import account_has_login, resolve_shared_profile_id
 
 
 class LoginWizardDialog(QDialog):
@@ -55,6 +58,12 @@ class LoginWizardDialog(QDialog):
             title = QLabel(f"正在为账号「{existing_account.display_name}」更新登录信息")
             title.setObjectName("sectionTitle")
             layout.addWidget(title)
+
+            share_section = self._build_share_section(existing_account)
+            if share_section is not None:
+                layout.addLayout(share_section)
+                divider = self._hint_label("——或者，重新走一遍登录流程——")
+                layout.addWidget(divider)
 
         hint = self._hint_label(
             "点下面的按钮会打开一个独立的、真实的 Chrome 窗口（不是自动化窗口，"
@@ -98,6 +107,48 @@ class LoginWizardDialog(QDialog):
         self.mall_name_input.setPlaceholderText("留空表示不需要自动切换店铺")
         layout.addWidget(self.mall_name_input, stretch=1)
         return layout
+
+    def _build_share_section(self, existing_account: accounts.Account):
+        """如果这个账号跟别的账号本来就是同一个 Temu 登录（比如同一个手机号
+        底下的另一个店铺，导入 Excel 时建的），不需要在这里重新走一遍手动
+        登录——直接绑定到那个账号已经配置好的登录信息就行，跟"复制账号"
+        是同一套逻辑，只是这次是给已经存在的账号"补"登录信息，不是新建。
+        没有别的已登录账号可选时，这个区块不显示。"""
+        candidates = [
+            a for a in accounts.list_accounts() if a.id != existing_account.id and account_has_login(a)
+        ]
+        if not candidates:
+            return None
+
+        layout = QHBoxLayout()
+        layout.addWidget(QLabel("共用已登录账号的登录信息："))
+        self.share_combo = QComboBox()
+        for account in candidates:
+            self.share_combo.addItem(account.display_name, userData=account.id)
+        layout.addWidget(self.share_combo, stretch=1)
+
+        share_button = QPushButton("绑定")
+        share_button.clicked.connect(self._on_share_clicked)
+        layout.addWidget(share_button)
+        return layout
+
+    def _on_share_clicked(self) -> None:
+        source_id = self.share_combo.currentData()
+        if not source_id or self._existing_account is None:
+            return
+
+        try:
+            profile_id = resolve_shared_profile_id(source_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "共用登录信息", str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "共用登录信息", f"迁移来源账号的登录信息失败：{exc}")
+            return
+
+        accounts.set_profile_id(self._existing_account.id, profile_id)
+        self.created_account = self._existing_account
+        self.accept()
 
     def _build_bottom_row(self):
         layout = QHBoxLayout()

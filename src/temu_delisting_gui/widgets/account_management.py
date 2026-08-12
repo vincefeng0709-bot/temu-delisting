@@ -26,6 +26,7 @@ from temu_delisting import accounts
 from temu_delisting.account_import import IMPORT_FORMAT_HELP, parse_account_excel
 from temu_delisting.config import load_settings
 
+from ..profile_sharing import account_has_login
 from ..time_format import format_local_time
 from .copy_account_dialog import CopyAccountDialog
 from .edit_account_dialog import EditAccountDialog
@@ -35,14 +36,6 @@ from .login_wizard import LoginWizardDialog
 _COLUMNS = ["选择", "显示名称", "店铺名称", "备注", "登录状态", "创建时间"]
 _CHECKBOX_COL = 0
 _NAME_COL = 1
-
-
-def _account_has_login(account: accounts.Account) -> bool:
-    if account.profile_id:
-        profile_dir = accounts.chrome_profile_dir(account.profile_id)
-        if profile_dir.exists() and any(profile_dir.iterdir()):
-            return True
-    return accounts.account_paths(account.id).storage_state_path.exists()
 
 
 class AccountManagementWidget(QWidget):
@@ -163,7 +156,7 @@ class AccountManagementWidget(QWidget):
             self._checkboxes[row] = checkbox
             self.table.setCellWidget(row, _CHECKBOX_COL, checkbox)
 
-            has_login = _account_has_login(account)
+            has_login = account_has_login(account)
             values = [
                 account.display_name,
                 account.mall_name or "（不需要切换）",

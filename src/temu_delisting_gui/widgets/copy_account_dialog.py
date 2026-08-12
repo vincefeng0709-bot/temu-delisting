@@ -6,8 +6,6 @@
 """
 from __future__ import annotations
 
-import uuid
-
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -20,8 +18,8 @@ from PySide6.QtWidgets import (
 )
 
 from temu_delisting import accounts
-from temu_delisting.browser import migrate_storage_state_into_profile
-from temu_delisting.config import load_settings
+
+from ..profile_sharing import resolve_shared_profile_id
 
 
 class CopyAccountDialog(QDialog):
@@ -101,26 +99,14 @@ class CopyAccountDialog(QDialog):
         if not source_id:
             return
 
-        source_account = accounts.get_account(source_id)
-        if source_account is None:
+        try:
+            profile_id = resolve_shared_profile_id(source_id)
+        except ValueError as exc:
+            QMessageBox.warning(self, "复制登录信息", str(exc))
             return
-
-        profile_id = source_account.profile_id
-        if not profile_id:
-            # 来源账号还没迁移到新方案（还是老的 storage_state.json）——
-            # 先给它建一个配置目录、把旧登录态灌进去，两边就都能用新方案了。
-            settings = load_settings(account_id=source_id)
-            if not settings.storage_state_path.exists():
-                QMessageBox.warning(self, "复制登录信息", "选中的这个账号还没有登录信息，没法复制。")
-                return
-            profile_id = uuid.uuid4().hex
-            profile_dir = accounts.chrome_profile_dir(profile_id)
-            try:
-                migrate_storage_state_into_profile(settings.storage_state_path, profile_dir, settings)
-            except Exception as exc:  # noqa: BLE001
-                QMessageBox.warning(self, "复制登录信息", f"迁移来源账号的登录信息失败：{exc}")
-                return
-            accounts.set_profile_id(source_id, profile_id)
+        except Exception as exc:  # noqa: BLE001
+            QMessageBox.warning(self, "复制登录信息", f"迁移来源账号的登录信息失败：{exc}")
+            return
 
         account = accounts.create_account(display_name, mall_name=mall_name, profile_id=profile_id)
         self.created_account = account
