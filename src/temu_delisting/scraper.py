@@ -271,10 +271,18 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
     真的翻不动了就当作已经到底，不再继续抓（不整个报错崩掉）。
 
     另外，日期跨度大、需要翻很多页时最容易触发网站的网络错误/限流——同事
-    实测反馈过这个现象。固定 400ms 的翻页间隔节奏太规律、太快，不像人在
-    操作，这里改成随机化的停顿（600~1400ms），每翻 8 页左右再额外多歇一
-    小段时间，尽量降低触发限流的概率；同时保留总页数上限兜底，避免限流
-    真的触发时陷入死循环刷屏。
+    实测反馈过这个现象，网页上能看到"Network Timeout, Please Try Again
+    Later"这个提示。固定间隔的翻页节奏太规律、太快，不像人在操作，这里
+    用随机化的停顿（800~1800ms），每翻 8 页左右再额外多歇一小段时间，
+    尽量降低触发限流的概率；同时保留总页数上限兜底，避免限流真的触发时
+    陷入死循环刷屏。
+
+    还有一种之前没处理好的情况：点"下一页"之后页面内容确实变了（不是卡在
+    原地），但变成了**空的**——这不是真的翻到底了，是网络超时导致这一页
+    的数据没加载出来。之前把"内容变了"直接当成"翻页成功"，空页面 + 后面
+    紧跟着 aria-disabled=true，就被误判成"正常到底"，实际上是网络错误
+    截断了抓取（136 条只抓到 110 条就是这么漏的）。现在把"变了但是空的"
+    也当成一次失败的尝试，继续重试，不会当成合法的结束状态接受。
     """
     logger = get_logger()
     expected_total = _read_total_count(page)
@@ -313,16 +321,29 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             page.wait_for_timeout(random.randint(2500, 4000))
 
         advanced = False
-        for attempt in range(5):
-            page.wait_for_timeout(random.randint(600, 1400))
+        for attempt in range(8):
+            page.wait_for_timeout(random.randint(800, 1800))
             next_item.first.locator("a").click()
             wait_settle(page)
-            after_signature = _page_signature(_parse_current_page_rows_safe(page))
-            if after_signature != before_signature:
+            after_rows = _parse_current_page_rows_safe(page)
+            after_signature = _page_signature(after_rows)
+            if after_signature != before_signature and after_rows:
                 advanced = True
                 if attempt > 0:
                     logger.warning(f"[scraper] 第 {page_index + 1} 页翻页重试 {attempt} 次后才成功")
                 break
+            if after_signature != before_signature and not after_rows:
+                # 页面内容"变了"（跟之前不一样），但变成了空的——这不是真的
+                # 翻到底了，是翻页点击成功但这一页的数据没加载出来（网络超时/
+                # 限流，网页上会弹"Network Timeout"提示）。之前把这种情况
+                # 误判成"已经到最后一页"直接停了，导致大跨度扫描漏抓一大截
+                # （比如 136 条只抓到 110 条）。这里当成一次失败的翻页尝试，
+                # 继续重试，不要就这么接受一个空页面。
+                logger.warning(
+                    f"[scraper] 第 {page_index + 1} 页翻页后内容为空（很可能是网络超时/限流导致"
+                    f"没加载出来），第 {attempt + 1} 次尝试失败，继续重试"
+                )
+                continue
             logger.warning(
                 f"[scraper] 第 {page_index + 1} 页点击「下一页」第 {attempt + 1} 次后页面内容未变化"
             )
@@ -330,7 +351,7 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             # 翻页按钮没禁用，但连续多次点击后页面内容都没变——大概率是
             # 网络错误/限流卡住了，不再继续翻页，把已经抓到的先返回。
             logger.error(
-                f"[scraper] 第 {page_index + 1} 页连续 5 次翻页都没有变化，"
+                f"[scraper] 第 {page_index + 1} 页连续 8 次翻页都没有变化/加载不出来，"
                 f"判定为卡住/限流，停止翻页（可能导致抓取数量比实际少）"
             )
             break
