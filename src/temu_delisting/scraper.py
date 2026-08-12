@@ -263,8 +263,18 @@ def _click_day(page: Page, panel_selector: str, year: int, month: int, day: int)
 _NEXT_PAGE_ITEM = 'li[title="下一页"]'
 
 
-def parse_violation_rows(page: Page) -> list[ViolationRow]:
-    """解析违规列表表格，逐页翻页直到没有下一页。
+def parse_violation_rows(page: Page) -> tuple[list[ViolationRow], int | None]:
+    """解析违规列表表格，逐页翻页直到没有下一页。返回 (抓到的所有行, 网页
+    显示的总数)——不做任何"判定为重复就丢掉"的过滤，同一个 SPU 出现多次
+    （比如在不同国家/地区分别违规）也原样保留。
+
+    之前这里做过按内容去重（先是挑几列拼 key，后来改成整行文字拼 key），
+    但只要网站上真的存在"肉眼完全看不出区别、但确实是两条不同记录"这种
+    情况（比如详情文字压根没写具体是哪个地区），内容去重就永远有可能把
+    真实数据错杀。而下架这一步本来就是按 SKC ID 幂等的（已经下架成功过的
+    SKC 会被跳过，见 delist.py 的 is_already_delisted），多出来的重复建议
+    项最多是审核时多看几眼、下架时被自动跳过，不会有副作用——两害相权，
+    宁可留着可能重复的数据也不要漏掉真实数据。
 
     分页是自研的 rocket-pagination 组件，"下一页"是个 <li> 不是按钮，可见
     内容只有一个箭头图标、没有文字——文字只在 title 属性里，get_by_role
@@ -273,11 +283,12 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
 
     实测发现"点下一页"不完全可靠：翻页太快有时会被网站限流/报网络错误，
     网页上能看到"Network Timeout, Please Try Again Later"这个提示。这里
-    校验页面内容是否真的变了（前后签名对比），点击后签名没变、或者变了但
-    是空的（网络超时导致这页数据没加载出来），都当成一次失败的尝试，用
-    指数退避重试（1、2、4、8、16秒……封顶20秒）——实测连续失败时每次间隔
-    都差不多，说明是服务端真需要一段冷却时间，不是随机小卡顿，固定的短
-    间隔重试再多次也没用。
+    校验页面内容是否真的变了（前后签名对比，只用来判断"翻页有没有真的
+    生效"，不用来过滤最终结果），点击后签名没变、或者变了但是空的（网络
+    超时导致这页数据没加载出来），都当成一次失败的尝试，用指数退避重试
+    （1、2、4、8、16秒……封顶20秒）——实测连续失败时每次间隔都差不多，
+    说明是服务端真需要一段冷却时间，不是随机小卡顿，固定的短间隔重试再
+    多次也没用。
 
     另外，日期跨度大、页数多的时候越往后越容易触发限流（同事实测反馈过），
     翻页间隔按页码递增（早期页面正常速度，后面自动放慢），比全程固定同一
@@ -297,36 +308,14 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
         logger.warning("[scraper] 没能读到页面上「共X条数据」的总数文字，跳过数量校验")
 
     rows: list[ViolationRow] = []
-    seen: set[str] = set()
 
     try:
         for page_index in range(500):
             page_rows = _parse_current_page_rows_safe(page)
             before_signature = _page_signature(page_rows)
-            new_count = 0
-            for row in page_rows:
-                # 去重 key 用整行的完整文字（raw_row_text），不是手动挑几列
-                # 拼出来的——实测发现挑列会漏：spu_id+违规类型+违规详情+
-                # 违规状态这4项全部一样，但确实是两条不同的记录（同一个
-                # SPU 在不同国家/地区分别违规，违规详情文字本身根本没写是
-                # 哪个地区，几个手动挑出来的列长得一样不奇怪）。整行拼起来
-                # 的文字只要网页上有任何一个肉眼能看见的字不一样（比如
-                # "违规处理结果"或者"申诉状态"后面的记录条数），就不会被
-                # 误判成重复。
-                key = row.raw_row_text
-                if key not in seen:
-                    seen.add(key)
-                    rows.append(row)
-                    new_count += 1
-                else:
-                    logger.warning(
-                        f"[scraper] 第 {page_index + 1} 页判定为重复、跳过：SPU {row.spu_id}，"
-                        f"违规类型「{row.violation_type}」，违规状态「{row.violation_status}」，"
-                        f"详情前30字：{row.violation_detail[:30]!r}"
-                    )
+            rows.extend(page_rows)
             logger.info(
-                f"[scraper] 第 {page_index + 1} 页：本页 {len(page_rows)} 行，"
-                f"新增 {new_count} 条，累计 {len(rows)} 条"
+                f"[scraper] 第 {page_index + 1} 页：本页 {len(page_rows)} 行，累计 {len(rows)} 条"
             )
 
             next_item = page.locator(_NEXT_PAGE_ITEM)
@@ -386,13 +375,13 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
         # 已经抓到的部分先保住，好过整批数据全部丢掉重来。
         logger.error(f"[scraper] 翻页过程中连接出现致命错误，提前结束（保留已抓到的部分）：{exc}")
 
-    logger.info(f"[scraper] 翻页结束，共抓取 {len(rows)} 条去重后的违规记录")
+    logger.info(f"[scraper] 翻页结束，共抓取 {len(rows)} 条违规记录（不含去重，可能有同一 SPU 多条）")
     if expected_total is not None and len(rows) != expected_total:
         logger.error(
             f"[scraper] 抓取数量对不上：页面显示共 {expected_total} 条，实际抓到 {len(rows)} 条，"
-            "可能存在漏抓、多抓，或去重误删了本来不同但文字相同的记录"
+            "可能是翻页时漏抓了一部分（网络问题），请核对"
         )
-    return rows
+    return rows, expected_total
 
 
 def _read_total_count(page: Page) -> int | None:

@@ -68,7 +68,15 @@ class ReviewTableWidget(QWidget):
         button_row.addWidget(self.save_button)
         layout.addLayout(button_row)
 
-    def load(self, settings: Settings, batch_id: str, suggestions: list[Suggestion]) -> None:
+    def load(
+        self,
+        settings: Settings,
+        batch_id: str,
+        suggestions: list[Suggestion],
+        total_from_page: int | None = None,
+        raw_row_count: int | None = None,
+        unique_spu_count: int | None = None,
+    ) -> None:
         self._settings = settings
         self._batch_id = batch_id
         self._suggestions = suggestions
@@ -94,8 +102,14 @@ class ReviewTableWidget(QWidget):
                     item.setBackground(NEEDS_REVIEW_COLOR)
                 self.table.setItem(row, col_offset, item)
 
+        stats_parts = [f"批次 {batch_id}"]
+        stats_parts.append(f"网页显示总数 {total_from_page}" if total_from_page is not None else "网页总数未知")
+        stats_parts.append(f"实际抓取 {raw_row_count if raw_row_count is not None else len(suggestions)} 条")
+        if unique_spu_count is not None:
+            stats_parts.append(f"去重后 {unique_spu_count} 个不同 SPU")
         self.info_label.setText(
-            f"批次 {batch_id} 共 {len(suggestions)} 条，黄色底色是没见过的违规类型，请谨慎确认。"
+            "，".join(stats_parts) + "。黄色底色是没见过的违规类型，请谨慎确认；"
+            "同一个 SPU 出现多条一般是它在不同国家/地区分别违规，下架时会自动识别已处理过的，不用担心重复。"
         )
 
     # -- 操作 --------------------------------------------------------

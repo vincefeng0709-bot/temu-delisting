@@ -16,6 +16,7 @@ from .browser import open_page
 from .classifier import classify
 from .config import Settings
 from .delist import SkcOutcome, delist_spu
+from .logging_setup import get_logger
 from .mall import ensure_correct_mall, goto_seller_central_home
 from .review import export_suggestions_csv
 from .store import Store, Suggestion
@@ -34,6 +35,13 @@ class ScanResult:
     row_count: int
     export_path: Path
     suggestions: list[Suggestion]
+    # 网页自己显示的"共X条数据"（可能读不到，None）、实际抓到的原始行数
+    # （不去重，row_count 就是这个）、按 SPU ID 去重之后还有几个不同的
+    # SPU——三个数分开看，是为了让"抓没抓全"这件事不用靠猜：网页总数和
+    # 实际抓取数对得上，就说明翻页没漏；同一个 SPU 出现好几条，一般是它
+    # 在多个国家/地区分别违规，不是抓重复了。
+    total_from_page: int | None = None
+    unique_spu_count: int = 0
 
 
 def run_scan(
@@ -58,9 +66,9 @@ def run_scan(
             ensure_correct_mall(page, settings.mall_name)
         scraper.goto_violation_list(page, settings)
         scraper.query_violations(page, start, end)
-        rows = scraper.parse_violation_rows(page)
+        rows, total_from_page = scraper.parse_violation_rows(page)
 
-    log(f"[scan] 抓取到 {len(rows)} 条违规记录。")
+    raw_row_count = len(rows)
 
     for row in rows:
         classification = classify(row.violation_type, settings.known_delist_types)
@@ -69,11 +77,26 @@ def run_scan(
         )
 
     suggestions = store.list_suggestions(batch_id)
+    unique_spu_count = store.count_unique_spu(batch_id)
+    store.set_batch_stats(batch_id, total_from_page, raw_row_count)
+
+    stats_line = (
+        f"[scan] 网页显示总数：{total_from_page if total_from_page is not None else '未知'}，"
+        f"实际抓取：{raw_row_count} 条，去重后不同 SPU 数：{unique_spu_count} 个"
+    )
+    log(stats_line)
+    get_logger().info(stats_line)  # log() 只更新界面日志区，这里额外确保也写进日志文件
+
     export_path = export_suggestions_csv(settings.exports_dir, batch_id, suggestions)
     log(f"[scan] 建议清单已导出: {export_path}")
 
     return ScanResult(
-        batch_id=batch_id, row_count=len(rows), export_path=export_path, suggestions=suggestions
+        batch_id=batch_id,
+        row_count=raw_row_count,
+        export_path=export_path,
+        suggestions=suggestions,
+        total_from_page=total_from_page,
+        unique_spu_count=unique_spu_count,
     )
 
 

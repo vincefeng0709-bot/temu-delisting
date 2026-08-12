@@ -14,7 +14,9 @@ CREATE TABLE IF NOT EXISTS batches (
     batch_id TEXT PRIMARY KEY,
     start_time TEXT NOT NULL,
     end_time TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    total_from_page INTEGER,
+    raw_row_count INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS suggestions (
@@ -46,6 +48,19 @@ def _now() -> str:
 
 
 @dataclass
+class BatchInfo:
+    batch_id: str
+    start_time: str
+    end_time: str
+    created_at: str
+    # 网页自己显示的"共X条数据"，和这次实际抓到的行数（没做任何去重，
+    # 同一个 SPU 在不同地区各算一条也都留着）——扫描一开始建批次的时候
+    # 还没抓完，不知道这两个数，抓完之后再用 set_batch_stats 补上去。
+    total_from_page: Optional[int]
+    raw_row_count: Optional[int]
+
+
+@dataclass
 class Suggestion:
     id: int
     batch_id: str
@@ -62,6 +77,18 @@ class Store:
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._conn.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self) -> None:
+        """老数据库是在加 total_from_page/raw_row_count 这两列之前建的，
+        CREATE TABLE IF NOT EXISTS 不会给已经存在的表补列，这里手动补上，
+        不会丢现有数据。"""
+        existing_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(batches)")}
+        if "total_from_page" not in existing_columns:
+            self._conn.execute("ALTER TABLE batches ADD COLUMN total_from_page INTEGER")
+        if "raw_row_count" not in existing_columns:
+            self._conn.execute("ALTER TABLE batches ADD COLUMN raw_row_count INTEGER")
         self._conn.commit()
 
     def close(self) -> None:
@@ -83,6 +110,32 @@ class Store:
         )
         self._conn.commit()
         return batch_id
+
+    def set_batch_stats(self, batch_id: str, total_from_page: Optional[int], raw_row_count: int) -> None:
+        self._conn.execute(
+            "UPDATE batches SET total_from_page = ?, raw_row_count = ? WHERE batch_id = ?",
+            (total_from_page, raw_row_count, batch_id),
+        )
+        self._conn.commit()
+
+    def get_batch(self, batch_id: str) -> Optional[BatchInfo]:
+        row = self._conn.execute("SELECT * FROM batches WHERE batch_id = ?", (batch_id,)).fetchone()
+        if row is None:
+            return None
+        return BatchInfo(
+            batch_id=row["batch_id"],
+            start_time=row["start_time"],
+            end_time=row["end_time"],
+            created_at=row["created_at"],
+            total_from_page=row["total_from_page"],
+            raw_row_count=row["raw_row_count"],
+        )
+
+    def count_unique_spu(self, batch_id: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(DISTINCT spu_id) AS c FROM suggestions WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        return row["c"] if row else 0
 
     # -- suggestions ------------------------------------------------------
 

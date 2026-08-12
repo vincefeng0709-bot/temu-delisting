@@ -132,7 +132,16 @@ class MainWindow(QMainWindow):
         settings = load_settings(account_id=account_id)
         with open_store(settings.db_path) as store:
             suggestions = store.list_suggestions(batch_id)
-        self.review_table.load(settings, batch_id, suggestions)
+            batch_info = store.get_batch(batch_id)
+            unique_spu_count = store.count_unique_spu(batch_id)
+        self.review_table.load(
+            settings,
+            batch_id,
+            suggestions,
+            total_from_page=batch_info.total_from_page if batch_info else None,
+            raw_row_count=batch_info.raw_row_count if batch_info else None,
+            unique_spu_count=unique_spu_count,
+        )
 
     def _reload_accounts(self) -> None:
         current_id = self.account_combo.currentData()
@@ -258,7 +267,14 @@ class MainWindow(QMainWindow):
 
         if self.account_combo.currentData() == job.account_id:
             settings = load_settings(account_id=job.account_id)
-            self.review_table.load(settings, result.batch_id, result.suggestions)
+            self.review_table.load(
+                settings,
+                result.batch_id,
+                result.suggestions,
+                total_from_page=result.total_from_page,
+                raw_row_count=result.row_count,
+                unique_spu_count=result.unique_spu_count,
+            )
             self._tabs.setCurrentWidget(self.review_table)
 
         self._update_action_buttons()
