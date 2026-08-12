@@ -41,6 +41,7 @@ from temu_delisting.store import open_store
 
 from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
+from .copy_account_dialog import CopyAccountDialog
 from .edit_account_dialog import EditAccountDialog
 from .log_viewer import LogViewerDialog
 from .login_wizard import LoginWizardDialog
@@ -118,6 +119,9 @@ class MainWindow(QMainWindow):
         self.add_account_button = QPushButton("+ 添加账号")
         self.add_account_button.clicked.connect(self._on_add_account_clicked)
 
+        self.copy_account_button = QPushButton("+ 复制账号")
+        self.copy_account_button.clicked.connect(self._on_copy_account_clicked)
+
         self.view_log_button = QPushButton("查看日志")
         self.view_log_button.clicked.connect(self._on_view_log_clicked)
 
@@ -127,8 +131,22 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.update_login_button)
         layout.addWidget(self.delete_account_button)
         layout.addWidget(self.add_account_button)
+        layout.addWidget(self.copy_account_button)
         layout.addWidget(self.view_log_button)
         return layout
+
+    def _on_copy_account_clicked(self) -> None:
+        existing = accounts.list_accounts()
+        if not existing:
+            QMessageBox.information(self, "复制登录信息", "还没有任何账号，请先用「+ 添加账号」建一个。")
+            return
+        dialog = CopyAccountDialog(existing, self)
+        if dialog.exec() == CopyAccountDialog.Accepted and dialog.created_account is not None:
+            self._reload_accounts()
+            index = self.account_combo.findData(dialog.created_account.id)
+            if index >= 0:
+                self.account_combo.setCurrentIndex(index)
+            self._log(f"【复制账号】已成功创建账号「{dialog.created_account.display_name}」（复制自已有登录信息）。")
 
     def _on_account_selection_changed(self) -> None:
         self._update_action_buttons()
