@@ -272,10 +272,12 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
 
     另外，日期跨度大、需要翻很多页时最容易触发网站的网络错误/限流——同事
     实测反馈过这个现象，网页上能看到"Network Timeout, Please Try Again
-    Later"这个提示。固定间隔的翻页节奏太规律、太快，不像人在操作，这里
-    用随机化的停顿（800~1800ms），每翻 8 页左右再额外多歇一小段时间，
-    尽量降低触发限流的概率；同时保留总页数上限兜底，避免限流真的触发时
-    陷入死循环刷屏。
+    Later"这个提示。正常翻页用随机化的停顿（第一次约1~1.8秒），每翻 8 页
+    左右再额外多歇一小段时间，尽量降低触发限流的概率；真翻页失败时改成
+    指数退避（1、2、4、8、16秒……封顶20秒）——实测连续失败时每次间隔都
+    差不多，说明是服务端真需要冷却时间，不是随机小卡顿，固定的短间隔
+    重试再多次也没用，得等得更久才行；同时保留总页数上限兜底，避免限流
+    真的触发时陷入死循环刷屏。
 
     还有一种之前没处理好的情况：点"下一页"之后页面内容确实变了（不是卡在
     原地），但变成了**空的**——这不是真的翻到底了，是网络超时导致这一页
@@ -322,7 +324,14 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
 
         advanced = False
         for attempt in range(8):
-            page.wait_for_timeout(random.randint(800, 1800))
+            # 指数退避：第一次失败大概率是偶尔的小卡顿，隔个一两秒重试就行；
+            # 但实测发现真撞上限流/网络超时时，连续 8 次都卡在同一页、每次
+            # 间隔都差不多——这不是随机抖动，是服务端真的需要一段冷却时间，
+            # 固定 1~2 秒的间隔完全等不到它恢复。改成指数增长的等待时间
+            # （封顶 20 秒），第一次还是很快，后面失败得越多就等得越久，
+            # 给服务端真正喘口气的机会。
+            backoff_ms = min(1000 * (2**attempt), 20000) + random.randint(0, 800)
+            page.wait_for_timeout(backoff_ms)
             next_item.first.locator("a").click()
             wait_settle(page)
             after_rows = _parse_current_page_rows_safe(page)
