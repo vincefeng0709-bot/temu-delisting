@@ -15,8 +15,8 @@ from .auth import ensure_logged_in
 from .browser import open_page
 from .classifier import classify
 from .config import Settings
-from .delist import SkcOutcome, delist_spu, goto_lifecycle_management
-from .mall import ensure_correct_mall
+from .delist import SkcOutcome, delist_spu
+from .mall import ensure_correct_mall, goto_seller_central_home
 from .review import export_suggestions_csv
 from .store import Store, Suggestion
 
@@ -50,10 +50,13 @@ def run_scan(
 
     with open_page(settings) as page:
         ensure_logged_in(page, settings)
-        # 店铺切换的入口只在 agentseller.temu.com 这边的页面上才有，ensure_logged_in
-        # 落地的是 seller.kuajingmaihuo.com，所以要等真正导航过去之后再校验/切换。
+        # 店铺切换的入口只在 Seller Central 首页才有——"合规中心/违规处理"这类
+        # 子页面完全没有这个组件（实测卡在这里等 30 秒都等不到），必须先单独
+        # 导航过去，校验/切换完了再进违规处理页面。
+        if settings.mall_name:
+            goto_seller_central_home(page)
+            ensure_correct_mall(page, settings.mall_name)
         scraper.goto_violation_list(page, settings)
-        ensure_correct_mall(page, settings.mall_name)
         scraper.query_violations(page, start, end)
         rows = scraper.parse_violation_rows(page)
 
@@ -122,11 +125,11 @@ def run_apply(
 
     with open_page(settings) as page:
         ensure_logged_in(page, settings)
-        # 同上：店铺切换入口只在 agentseller.temu.com 才有，先导航过去一次
-        # 再校验/切换（delist_spu 内部每个 SPU 还会各自再导航一次这个页面，
-        # 那是已有的行为，这里只是确保切店铺发生在正确的域名下）。
-        goto_lifecycle_management(page, settings)
-        ensure_correct_mall(page, settings.mall_name)
+        # 同上：店铺切换入口只在 Seller Central 首页才有，"上新生命周期管理"
+        # 这类子页面没有这个组件，必须先单独导航过去校验/切换。
+        if settings.mall_name:
+            goto_seller_central_home(page)
+            ensure_correct_mall(page, settings.mall_name)
         for index, suggestion in enumerate(confirmed, start=1):
             if should_stop is not None and should_stop():
                 stopped_early = True

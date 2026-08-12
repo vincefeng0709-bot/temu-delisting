@@ -20,10 +20,21 @@ from .browser import wait_settle
 from .logging_setup import get_logger
 from .text_match import loose_text
 
+# 切换店铺的入口只在 Seller Central 首页这个页面上才有——实测发现"合规中心/
+# 违规处理"这类子页面用的是完全不同的头部布局，压根没有这个组件，之前直接
+# 在违规处理页面上找这个元素，等了 30 秒都等不到，就是因为找错页面了。所以
+# 校验/切换必须先导航到这个首页，弄完了调用方自己再导航去真正要用的页面。
+SELLER_CENTRAL_HOME_URL = "https://agentseller.temu.com/"
+
 _ACCOUNT_INFO_TRIGGER = ".account-info_accountInfo__wc0kw"
 _MAIN_MALL_PANEL = ".account-info_mainMall__R6U14"
 _SWITCH_MODAL = ".account-info_changeModal__6sHPm"
 _MALL_SECTION = ".account-info_mallSection__zkiSZ"
+
+
+def goto_seller_central_home(page: Page) -> None:
+    page.goto(SELLER_CENTRAL_HOME_URL, wait_until="domcontentloaded")
+    wait_settle(page)
 
 
 def read_current_mall_name(page: Page) -> str:
@@ -36,7 +47,9 @@ def read_current_mall_name(page: Page) -> str:
 
 
 def ensure_correct_mall(page: Page, mall_name: str) -> None:
-    """确保当前自动化会话激活的是 mall_name 这个店铺，不是就切过去。
+    """确保当前自动化会话激活的是 mall_name 这个店铺，不是就切过去。调用前
+    必须已经在 Seller Central 首页（先调 goto_seller_central_home），这个
+    切换入口只在这个页面上才有。
 
     mall_name 为空字符串时直接跳过（老账号、或者本来就只有一个店铺，不需要
     校验/切换）。mall_name 非空但切换失败（比如页面结构变了、或者这个账号
@@ -52,6 +65,11 @@ def ensure_correct_mall(page: Page, mall_name: str) -> None:
     if current == mall_name:
         logger.info(f"[mall] 当前店铺已经是「{mall_name}」，不需要切换")
         return
+    if not current:
+        raise RuntimeError(
+            f"没能读到页面上当前显示的店铺名字（想切到「{mall_name}」）——"
+            "确认一下是不是已经在 Seller Central 首页，页面结构可能变了"
+        )
 
     logger.info(f"[mall] 当前店铺是「{current}」，需要切换到「{mall_name}」")
 
