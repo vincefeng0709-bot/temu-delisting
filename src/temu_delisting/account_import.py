@@ -7,7 +7,10 @@
 
 期望的表格列（按表头文字找列，不认死列的顺序）：
     账号        —— 手机号，纯展示/分组用，不是登录凭证，不会拿去做任何
-                    自动化操作
+                    自动化操作。绝对不要放 Temu 登录密码这类真实凭证进
+                    表格——系统本身做不到自动登录，密码导进来也用不上，
+                    只会变成明文躺在共享表格和账号数据库里，是真实的
+                    泄露风险，登录必须由知道密码的人手动操作。
     店铺数量     —— 这个手机号下一共几个店铺
     全托管       —— 全托管店铺数（这张表只给了"手机号级别"的汇总数字，
                     没法知道具体是底下哪几个店铺，所以只记进备注，不会
@@ -19,6 +22,9 @@
                     拆开之后每一个就是一个要创建的账号条目（display_name
                     和 mall_name 都用这个，因为 mall_name 必须跟网页上
                     显示的文字完全一致才能用来自动切换店铺）
+    备注        —— 可选，自己想写什么都行（谁负责的、什么时候接手的之类），
+                    原样保留在导入后账号的"备注"字段最前面，不会被系统
+                    自动生成的那部分覆盖掉
 """
 from __future__ import annotations
 
@@ -33,10 +39,26 @@ _HEADER_ALIASES = {
     "半托管": "semi_managed",
     "店铺编号": "shop_code",
     "店铺名称": "shop_names",
+    "备注": "custom_notes",
 }
 _REQUIRED_KEYS = {"phone", "shop_count", "shop_names"}
 
 _NAME_SPLIT_PATTERN = re.compile(r"[、,，/\s]+")
+
+IMPORT_FORMAT_HELP = """Excel 表格第一行是表头，列名要写得跟下面完全一致（顺序无所谓，多余的列会被忽略）：
+
+必须要有的列：
+・账号 —— 手机号，纯展示/分组用，不是登录密码，绝对不要把 Temu 登录密码写进这张表
+・店铺数量 —— 这个手机号下一共几个店铺
+・店铺名称 —— 网页上真实显示的店铺名字，多个店铺用顿号、逗号或斜杠隔开，比如"SaveNest、Dwmane Shop"
+
+可以不填的列：
+・全托管 / 半托管 —— 数量，会自动记进备注里
+・店铺编号 —— 内部编号，纯展示用
+・备注 —— 自己想写什么都行，会原样保留在导入后账号的备注最前面
+
+导入进来的账号只有"架子"（名字、备注），还没有登录信息，每个账号导入后
+还要单独用「+ 添加账号」或「+ 复制账号」手动登录一次。"""
 
 
 @dataclass
@@ -101,6 +123,8 @@ def parse_account_excel(path: Path) -> ImportResult:
 
         full_managed = cell("full_managed")
         semi_managed = cell("semi_managed")
+        custom_notes_raw = cell("custom_notes")
+        custom_notes = str(custom_notes_raw).strip() if custom_notes_raw is not None else ""
 
         names = [n for n in _NAME_SPLIT_PATTERN.split(str(shop_names_raw or "").strip()) if n]
         if not names:
@@ -128,7 +152,9 @@ def parse_account_excel(path: Path) -> ImportResult:
                 f"全托管 {full_managed if full_managed is not None else '?'}/"
                 f"半托管 {semi_managed if semi_managed is not None else '?'}"
             )
-        notes = "，".join(note_parts)
+        auto_notes = "，".join(note_parts)
+        # 自己写的备注放最前面，不会被自动生成的那部分挤掉或覆盖。
+        notes = f"{custom_notes}（{auto_notes}）" if custom_notes and auto_notes else (custom_notes or auto_notes)
 
         for name in names:
             result.shops.append(ImportedShop(display_name=name, mall_name=name, notes=notes))

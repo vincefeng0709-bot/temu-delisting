@@ -39,6 +39,7 @@ class JobRequest:
     end_date: str
     request_path: Path
     submitted_by: str = ""
+    submitted_at: str = ""
 
 
 def scan_pending_requests(root_dir: Path, account_names: list[str]) -> list[JobRequest]:
@@ -81,9 +82,46 @@ def scan_pending_requests(root_dir: Path, account_names: list[str]) -> list[JobR
                     end_date=end_date,
                     request_path=request_file,
                     submitted_by=str(data.get("submitted_by", "")),
+                    submitted_at=str(data.get("submitted_at", "")),
                 )
             )
     return pending
+
+
+def prune_queue_order(saved_order: list[str], pending: list[JobRequest]) -> list[str]:
+    """主机这边手动排过的队列顺序，每轮轮询前先把已经跑完/已经开始跑的
+    任务 ID 从这份顺序里摘掉——只保留"还在排队、还没轮到"的那些，不然这
+    份顺序文件会越攒越长，混进一堆早就处理完的死数据。"""
+    pending_ids = {request.job_id for request in pending}
+    return [job_id for job_id in saved_order if job_id in pending_ids]
+
+
+def select_next_jobs(
+    pending: list[JobRequest],
+    queue_order: list[str],
+    busy_account_names: set[str],
+    available_slots: int,
+) -> list[JobRequest]:
+    """按排队顺序（主机手动调整过的优先按那个来，没手动调整过的按提交时间
+    从早到晚）挑出接下来最多 available_slots 个可以马上开始跑的任务——
+    账号已经在忙的先跳过，留着排队，不占并发名额；同一轮里选中的账号也要
+    立刻算"忙"，避免同一个账号在这一轮里被选中两次。"""
+    if available_slots <= 0:
+        return []
+
+    order_index = {job_id: i for i, job_id in enumerate(queue_order)}
+    ordered = sorted(pending, key=lambda r: (order_index.get(r.job_id, len(queue_order)), r.submitted_at))
+
+    busy = set(busy_account_names)
+    selected: list[JobRequest] = []
+    for request in ordered:
+        if request.account_name in busy:
+            continue
+        selected.append(request)
+        busy.add(request.account_name)
+        if len(selected) >= available_slots:
+            break
+    return selected
 
 
 def read_result(root_dir: Path, account_name: str, job_id: str) -> dict | None:

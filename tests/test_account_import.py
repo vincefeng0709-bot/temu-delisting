@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from temu_delisting.account_import import parse_account_excel
+from temu_delisting.account_import import IMPORT_FORMAT_HELP, parse_account_excel
 
 
 def _write_workbook(path: Path, rows: list[list]) -> None:
@@ -80,6 +80,42 @@ def test_raises_when_required_columns_missing(tmp_path):
 
     with pytest.raises(ValueError, match="店铺名称"):
         parse_account_excel(path)
+
+
+def test_custom_notes_column_preserved_ahead_of_auto_notes(tmp_path):
+    path = tmp_path / "accounts.xlsx"
+    _write_workbook(
+        path,
+        [
+            ["账号", "店铺数量", "全托管", "半托管", "店铺编号", "店铺名称", "备注"],
+            ["19101569761", 1, 1, 0, "店铺01-01", "SaveNset", "小王负责，2026年交接"],
+        ],
+    )
+
+    result = parse_account_excel(path)
+
+    assert result.shops[0].notes.startswith("小王负责，2026年交接")
+    assert "该手机号下共 1 个店铺" in result.shops[0].notes
+
+
+def test_missing_custom_notes_column_still_works(tmp_path):
+    path = tmp_path / "accounts.xlsx"
+    _write_workbook(
+        path,
+        [
+            ["账号", "店铺数量", "店铺名称"],
+            ["19101569761", 1, "SaveNset"],
+        ],
+    )
+
+    result = parse_account_excel(path)
+
+    assert not result.issues
+    assert result.shops[0].notes  # 没有自定义备注列时，自动生成的备注照常存在
+
+
+def test_import_format_help_mentions_no_passwords():
+    assert "密码" in IMPORT_FORMAT_HELP
 
 
 def test_handles_comma_and_slash_separators(tmp_path):

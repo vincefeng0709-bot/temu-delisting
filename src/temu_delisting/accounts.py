@@ -248,7 +248,14 @@ def chrome_profile_dir(profile_id: str) -> Path:
 def delete_account(account_id: str) -> None:
     """从注册表里移除，并把这个账号的数据目录（登录态/数据库/导出/日志）
     一起删掉——这是本地文件删除，不会影响 Temu 账号本身。调用方（GUI）
-    自己负责在删之前跟用户确认。"""
+    自己负责在删之前跟用户确认。
+
+    注册表（accounts.json）才是"这个账号还存不存在"的权威判断依据——数据
+    目录删不删得干净是次要的。如果目录里有文件被占用（比如数据库文件还
+    没被彻底释放、杀毒软件正在扫描），不应该让这种偶发的文件锁把整个删除
+    操作卡死、导致账号明明该消失了但界面上还残留着——所以这里删目录用
+    ignore_errors，删不掉的文件就留着（不影响账号本身"已删除"这个事实，
+    残留文件之后可以手动清）。"""
     entries = _load_registry()
     remaining = [e for e in entries if e["id"] != account_id]
     if len(remaining) == len(entries):
@@ -257,7 +264,7 @@ def delete_account(account_id: str) -> None:
 
     account_dir = _data_root() / "accounts" / account_id
     if account_dir.exists():
-        shutil.rmtree(account_dir)
+        shutil.rmtree(account_dir, ignore_errors=True)
 
 
 def ensure_default_account() -> Account:

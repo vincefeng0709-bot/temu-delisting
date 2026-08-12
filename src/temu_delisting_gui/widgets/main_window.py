@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 
 from temu_delisting import accounts, remote_jobs
 from temu_delisting.config import load_settings
-from temu_delisting.remote_config import load_remote_config
+from temu_delisting.remote_config import load_queue_order, load_remote_config, save_queue_order
 from temu_delisting.store import open_store
 
 from .._version import __version__
@@ -531,7 +531,21 @@ class MainWindow(QMainWindow):
             self._log(f"[接口程序] 读取共享文件夹失败：{exc}")
             return
 
-        for request in pending:
+        saved_order = load_queue_order()
+        pruned_order = remote_jobs.prune_queue_order(saved_order, pending)
+        if pruned_order != saved_order:
+            save_queue_order(pruned_order)
+
+        # 「正忙」按账号名字算，不区分是本地手动跑的还是远程触发的——同一个
+        # 账号同一时间只能有一个任务，不管是谁发起的。并发上限只限制「同时
+        # 在跑的远程任务」这一类，不影响同事在「运行」页手动点的任务。
+        running_remote_count = sum(1 for job in self._jobs.values() if job.remote_request is not None)
+        available_slots = max(0, config.max_concurrent_remote_jobs - running_remote_count)
+        busy_account_names = {job.account_name for job in self._jobs.values()}
+
+        to_start = remote_jobs.select_next_jobs(pending, pruned_order, busy_account_names, available_slots)
+
+        for request in to_start:
             account = accounts.get_account_by_name(request.account_name)
             if account is None:
                 self._log(f"[接口程序] 找不到账号「{request.account_name}」，跳过任务 {request.job_id}")
@@ -539,8 +553,6 @@ class MainWindow(QMainWindow):
                     request, "failed", message="主机这边找不到这个账号，请检查账号管理页里的显示名称是否完全一致"
                 )
                 continue
-            if self._account_has_active_job(account.id):
-                continue  # 账号正忙，先跳过，下次轮询再看
 
             self._log(
                 f"[接口程序] 收到远程任务：账号「{account.display_name}」，"
