@@ -310,6 +310,12 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
                     seen.add(key)
                     rows.append(row)
                     new_count += 1
+                else:
+                    logger.warning(
+                        f"[scraper] 第 {page_index + 1} 页判定为重复、跳过：SPU {row.spu_id}，"
+                        f"违规类型「{row.violation_type}」，违规状态「{row.violation_status}」，"
+                        f"详情前30字：{row.violation_detail[:30]!r}"
+                    )
             logger.info(
                 f"[scraper] 第 {page_index + 1} 页：本页 {len(page_rows)} 行，"
                 f"新增 {new_count} 条，累计 {len(rows)} 条"
