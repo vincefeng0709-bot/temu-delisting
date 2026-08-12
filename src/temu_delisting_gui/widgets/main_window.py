@@ -78,6 +78,10 @@ class MainWindow(QMainWindow):
         self._jobs: dict[str, JobEntry] = {}
         self._workers: dict[str, object] = {}  # job_id -> ScanWorker/ApplyWorker（保活用，防止被垃圾回收）
         self._batch_by_account: dict[str, str] = {}
+        # 扫描完了、但还没在「审核清单」页被看过的账号——尤其是远程扫描，
+        # 跑完不会抢焦点切标签页，不加个提醒的话，同事很容易忘了去看，
+        # 还以为扫描没跑或者结果丢了。哪个账号的批次被看过一次就从这里摘掉。
+        self._unreviewed_accounts: set[str] = set()
 
         tabs = QTabWidget()
         self.setCentralWidget(tabs)
@@ -87,7 +91,7 @@ class MainWindow(QMainWindow):
         self.account_management.accounts_changed.connect(self._reload_accounts)
         tabs.addTab(self.account_management, "账号管理")
         self.review_table = ReviewTableWidget()
-        tabs.addTab(self.review_table, "审核清单")
+        self._review_tab_index = tabs.addTab(self.review_table, "审核清单")
         tabs.addTab(RemoteJobsSettingsWidget(), "接口程序")
         self._tabs = tabs
 
@@ -155,6 +159,16 @@ class MainWindow(QMainWindow):
             raw_row_count=batch_info.raw_row_count if batch_info else None,
             unique_spu_count=unique_spu_count,
         )
+        self._mark_account_reviewed(account_id)
+
+    def _mark_account_reviewed(self, account_id: str) -> None:
+        self._unreviewed_accounts.discard(account_id)
+        self._update_review_tab_badge()
+
+    def _update_review_tab_badge(self) -> None:
+        count = len(self._unreviewed_accounts)
+        label = f"审核清单（{count} 个账号待查看）" if count else "审核清单"
+        self._tabs.setTabText(self._review_tab_index, label)
 
     def _reload_accounts(self) -> None:
         current_id = self.account_combo.currentData()
@@ -291,6 +305,8 @@ class MainWindow(QMainWindow):
         self._set_task_status(job.row, f"完成，共 {result.row_count} 条")
         self._batch_by_account[job.account_id] = result.batch_id
         self._log(f"[{job.account_name}] 扫描完成，共 {result.row_count} 条")
+        self._unreviewed_accounts.add(job.account_id)
+        self._update_review_tab_badge()
 
         if job.remote_request is None and self.account_combo.currentData() == job.account_id:
             settings = load_settings(account_id=job.account_id)
@@ -303,6 +319,7 @@ class MainWindow(QMainWindow):
                 unique_spu_count=result.unique_spu_count,
             )
             self._tabs.setCurrentWidget(self.review_table)
+            self._mark_account_reviewed(job.account_id)
 
         if job.remote_request is not None:
             self._handle_remote_scan_finished(job, result)
