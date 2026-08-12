@@ -43,7 +43,7 @@ _HEADER_ALIASES = {
 }
 _REQUIRED_KEYS = {"phone", "shop_count", "shop_names"}
 
-_NAME_SPLIT_PATTERN = re.compile(r"[、,，/\s]+")
+_NAME_SPLIT_PATTERN = re.compile(r"[、,，/]+")
 
 IMPORT_FORMAT_HELP = """Excel 表格第一行是表头，列名要写得跟下面完全一致（顺序无所谓，多余的列会被忽略）：
 
@@ -126,7 +126,7 @@ def parse_account_excel(path: Path) -> ImportResult:
         custom_notes_raw = cell("custom_notes")
         custom_notes = str(custom_notes_raw).strip() if custom_notes_raw is not None else ""
 
-        names = [n for n in _NAME_SPLIT_PATTERN.split(str(shop_names_raw or "").strip()) if n]
+        names = [n.strip() for n in _NAME_SPLIT_PATTERN.split(str(shop_names_raw or "").strip()) if n.strip()]
         if not names:
             result.issues.append(
                 ImportRowIssue(row_number, f"手机号 {phone_text} 这一行没解析到店铺名称，已跳过")

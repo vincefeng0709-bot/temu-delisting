@@ -343,8 +343,7 @@ def parse_violation_rows(page: Page) -> tuple[list[ViolationRow], int | None]:
                 page.wait_for_timeout(backoff_ms + random.randint(0, 800))
                 next_item.first.locator("a").click()
                 wait_settle(page)
-                after_rows = _parse_current_page_rows_safe(page)
-                after_signature = _page_signature(after_rows)
+                after_rows, after_signature = _wait_for_page_change(page, before_signature)
                 if after_signature != before_signature and after_rows:
                     advanced = True
                     if attempt > 0:
@@ -397,6 +396,36 @@ def _read_total_count(page: Page) -> int | None:
 
 def _page_signature(rows: list[ViolationRow]) -> tuple[str, ...]:
     return tuple(f"{r.spu_id}|{r.violation_type}" for r in rows)
+
+
+_PAGE_CHANGE_POLL_TIMEOUT_MS = 6000
+_PAGE_CHANGE_POLL_INTERVAL_MS = 500
+
+
+def _wait_for_page_change(
+    page: Page, before_signature: tuple[str, ...], timeout_ms: int = _PAGE_CHANGE_POLL_TIMEOUT_MS
+) -> tuple[list[ViolationRow], tuple[str, ...]]:
+    """点完「下一页」之后不能只读一次就下结论——表格从旧内容变成新内容
+    中间有个异步渲染窗口，读早了会看到还没换掉的旧内容，签名会跟点击前
+    一模一样，误判成"这次点击没生效"。这里就是踩过的真实坑：判定失败后
+    调用方会再点一次「下一页」，但其实第一次点击早就生效了，第二次点击
+    直接把页面翻过了一整页——复盘同事实测的日志，「重试后才成功」这句
+    警告每出现一次，最终抓到的总数就精确少了一整页（10 条），三次不同
+    的测试、不同的丢失数量都跟重试次数 ×10 完全对上，不是巧合。
+
+    这里改成点击后在一个更长的窗口内反复轮询，直到签名真的变了（或者
+    彻底超时），而不是读一次就下结论——只有轮询到超时签名还没变，调用方
+    才应该认为这次点击真的没生效，可以安全地再点一次。"""
+    rows = _parse_current_page_rows_safe(page)
+    signature = _page_signature(rows)
+    elapsed_ms = 0
+    while signature == before_signature and elapsed_ms < timeout_ms:
+        page.wait_for_timeout(_PAGE_CHANGE_POLL_INTERVAL_MS)
+        elapsed_ms += _PAGE_CHANGE_POLL_INTERVAL_MS
+        wait_settle(page)
+        rows = _parse_current_page_rows_safe(page)
+        signature = _page_signature(rows)
+    return rows, signature
 
 
 _ROW_READ_TIMEOUT_MS = 5000

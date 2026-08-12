@@ -36,6 +36,8 @@ from temu_delisting.remote_config import (
     save_remote_config,
 )
 
+from ..time_format import format_local_time
+
 _EXPLANATION = (
     "分机把任务请求放到共享文件夹里账号名称的子文件夹（子文件夹名字必须跟"
     "「账号管理」页里的显示名称完全一致），这台主机开启监听后会自动扫描处理，"
@@ -208,7 +210,7 @@ class RemoteJobsSettingsWidget(QWidget):
                 request.account_name,
                 _ACTION_LABELS.get(request.action, request.action),
                 f"{request.start_date} ~ {request.end_date}",
-                request.submitted_at[:19].replace("T", " "),
+                format_local_time(request.submitted_at),
             ]
             for col, value in enumerate(values):
                 self.queue_table.setItem(row, col, QTableWidgetItem(value))

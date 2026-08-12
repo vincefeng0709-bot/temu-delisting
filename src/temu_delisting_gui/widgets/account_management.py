@@ -26,6 +26,7 @@ from temu_delisting import accounts
 from temu_delisting.account_import import IMPORT_FORMAT_HELP, parse_account_excel
 from temu_delisting.config import load_settings
 
+from ..time_format import format_local_time
 from .copy_account_dialog import CopyAccountDialog
 from .edit_account_dialog import EditAccountDialog
 from .log_viewer import LogViewerDialog
@@ -168,7 +169,7 @@ class AccountManagementWidget(QWidget):
                 account.mall_name or "（不需要切换）",
                 account.notes,
                 "已登录" if has_login else "未登录",
-                account.created_at[:19].replace("T", " "),
+                format_local_time(account.created_at),
             ]
             for col_offset, value in enumerate(values, start=_NAME_COL):
                 item = QTableWidgetItem(value)

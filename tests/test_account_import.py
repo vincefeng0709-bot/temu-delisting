@@ -118,6 +118,22 @@ def test_import_format_help_mentions_no_passwords():
     assert "密码" in IMPORT_FORMAT_HELP
 
 
+def test_preserves_internal_spaces_in_shop_names(tmp_path):
+    path = tmp_path / "accounts.xlsx"
+    _write_workbook(
+        path,
+        [
+            ["账号", "店铺数量", "店铺名称"],
+            ["13007256096", 2, "SaveNest、Dwmane Shop"],
+        ],
+    )
+
+    result = parse_account_excel(path)
+
+    assert not result.issues
+    assert [s.display_name for s in result.shops] == ["SaveNest", "Dwmane Shop"]
+
+
 def test_handles_comma_and_slash_separators(tmp_path):
     path = tmp_path / "accounts.xlsx"
     _write_workbook(
