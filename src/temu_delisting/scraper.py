@@ -53,6 +53,14 @@ class ViolationRow:
     violation_type: str
     violation_detail: str
     violation_status: str
+    # 这一行表格里所有列拼起来的完整文字，专门给去重逻辑用，不是给界面
+    # 显示用的。实测发现同一个 SPU 完全可能被判定为"重复"其实是两条真实
+    # 不同的记录（比如同一个商品在不同国家/地区分别违规——违规详情文字
+    # 本身根本没写具体是哪个地区，几个手动挑出来的列全部长得一样也不奇怪），
+    # 用整行的文字去重，比手动挑几列去猜要可靠——只要网页上哪怕有一个
+    # 肉眼能看见的字不一样（比如"违规处理结果"或"申诉状态"后面的记录
+    # 条数），整行拼出来的文字就会不一样，不会被误判成重复。
+    raw_row_text: str = ""
 
 
 def goto_violation_list(page: Page, settings: Settings) -> None:
@@ -289,7 +297,7 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
         logger.warning("[scraper] 没能读到页面上「共X条数据」的总数文字，跳过数量校验")
 
     rows: list[ViolationRow] = []
-    seen: set[tuple[str, str, str]] = set()
+    seen: set[str] = set()
 
     try:
         for page_index in range(500):
@@ -297,15 +305,15 @@ def parse_violation_rows(page: Page) -> list[ViolationRow]:
             before_signature = _page_signature(page_rows)
             new_count = 0
             for row in page_rows:
-                # 去重 key 加上 violation_status（第5列）——之前只用
-                # spu_id+违规类型+违规详情三项，这三项其实是模板化的官方
-                # 话术，两条真实不同的记录（比如同一个 SPU 下不同 SKC 各自
-                # 违规）完全可能撞出一模一样的文字，被误判成"重复读到的同
-                # 一行"而丢掉（实测一次干净的翻页、没有任何超时/重试，还是
-                # 152/153，差的这一条就是这么被误杀的）。加上状态列能降低
-                # 撞车概率，但没法保证 100% 不撞——这个站没有暴露真正唯一
-                # 的行 ID，内容去重终归有极限。
-                key = (row.spu_id, row.violation_type, row.violation_detail, row.violation_status)
+                # 去重 key 用整行的完整文字（raw_row_text），不是手动挑几列
+                # 拼出来的——实测发现挑列会漏：spu_id+违规类型+违规详情+
+                # 违规状态这4项全部一样，但确实是两条不同的记录（同一个
+                # SPU 在不同国家/地区分别违规，违规详情文字本身根本没写是
+                # 哪个地区，几个手动挑出来的列长得一样不奇怪）。整行拼起来
+                # 的文字只要网页上有任何一个肉眼能看见的字不一样（比如
+                # "违规处理结果"或者"申诉状态"后面的记录条数），就不会被
+                # 误判成重复。
+                key = row.raw_row_text
                 if key not in seen:
                     seen.add(key)
                     rows.append(row)
@@ -434,15 +442,18 @@ def _parse_current_page_rows(page: Page) -> list[ViolationRow]:
     for i in range(count):
         row = table_rows.nth(i)
         cells = row.locator("td")
-        if cells.count() < 5:
+        cell_count = cells.count()
+        if cell_count < 5:
             continue
-        spu_text = cells.nth(1).inner_text(timeout=_ROW_READ_TIMEOUT_MS)
-        spu_id = _extract_spu_id(spu_text)
-        violation_type = cells.nth(3).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip()
-        violation_detail = cells.nth(4).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip()
-        violation_status = (
-            cells.nth(5).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip() if cells.count() > 5 else ""
-        )
+
+        cell_texts = [
+            cells.nth(j).inner_text(timeout=_ROW_READ_TIMEOUT_MS).strip() for j in range(cell_count)
+        ]
+        spu_id = _extract_spu_id(cell_texts[1])
+        violation_type = cell_texts[3]
+        violation_detail = cell_texts[4]
+        violation_status = cell_texts[5] if cell_count > 5 else ""
+
         if spu_id:
             result.append(
                 ViolationRow(
@@ -450,6 +461,7 @@ def _parse_current_page_rows(page: Page) -> list[ViolationRow]:
                     violation_type=violation_type,
                     violation_detail=violation_detail,
                     violation_status=violation_status,
+                    raw_row_text="\x1f".join(cell_texts),
                 )
             )
     return result
