@@ -26,6 +26,9 @@ class Settings:
     storage_state_path: Path
     exports_dir: Path
     log_dir: Path
+    # 非空表示这个账号已经迁移到"持久化 Chrome 配置目录"方案，browser.py
+    # 会用这个目录复用真实登录态，不再依赖 storage_state_path 那份快照。
+    chrome_profile_dir: Path | None
     chat_timeout_seconds: int
     chat_cooldown_seconds: int
     known_delist_types: list[str] = field(default_factory=list)
@@ -47,6 +50,9 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
     paths = accounts.account_paths(account_id)
     account = accounts.get_account(account_id)
     mall_name = account.mall_name if account else ""
+    chrome_profile_dir = (
+        accounts.chrome_profile_dir(account.profile_id) if account and account.profile_id else None
+    )
 
     return Settings(
         account_id=account_id,
@@ -64,6 +70,7 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
         storage_state_path=paths.storage_state_path,
         exports_dir=paths.exports_dir,
         log_dir=paths.log_dir,
+        chrome_profile_dir=chrome_profile_dir,
         # 客服"结论性回复"现在靠 wait_for_delist_confirmation 里更宽松的
         # 匹配规则（不再只认"已下架"这一种说法）。实测发现客服回复经常要
         # 超过 15 秒，调太短会导致大量本来会成功的 SKC 被误判成"需要人工

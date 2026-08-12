@@ -47,6 +47,12 @@ class Account:
     # 那个手机号底下一共有几个店铺，方便事后核对——不是自动化要用的字段，
     # 纯粹给人看。
     notes: str = ""
+    # 持久化 Chrome 配置目录的分组 id——同一个 Temu 登录下的多个店铺账号
+    # 共用同一个 profile_id，指向同一份 Chrome 用户配置目录（真实登录态，
+    # 不是 Cookie 快照），任何一个店铺刷新登录，其余共用的店铺自动跟着生效。
+    # 空字符串表示这个账号还没迁移到新方案，继续走老的 storage_state.json
+    # 快照方式（向后兼容，不会强迫老账号立刻迁移）。
+    profile_id: str = ""
 
 
 @dataclass
@@ -135,7 +141,9 @@ def get_account(account_id: str) -> Account | None:
     return None
 
 
-def create_account(display_name: str, mall_name: str = "", notes: str = "") -> Account:
+def create_account(
+    display_name: str, mall_name: str = "", notes: str = "", profile_id: str = ""
+) -> Account:
     _migrate_flat_layout_if_needed()
     entries = _load_registry()
 
@@ -151,6 +159,7 @@ def create_account(display_name: str, mall_name: str = "", notes: str = "") -> A
         created_at=datetime.now(timezone.utc).isoformat(),
         mall_name=mall_name,
         notes=notes,
+        profile_id=profile_id,
     )
     entries.append(
         {
@@ -159,6 +168,7 @@ def create_account(display_name: str, mall_name: str = "", notes: str = "") -> A
             "created_at": account.created_at,
             "mall_name": account.mall_name,
             "notes": account.notes,
+            "profile_id": account.profile_id,
         }
     )
     _save_registry(entries)
@@ -198,6 +208,25 @@ def set_notes(account_id: str, notes: str) -> Account:
             _save_registry(entries)
             return Account(**entry)
     raise ValueError(f"找不到账号 {account_id}")
+
+
+def set_profile_id(account_id: str, profile_id: str) -> Account:
+    """设置/修改这个账号绑定的 Chrome 配置分组 id。"""
+    entries = _load_registry()
+    for entry in entries:
+        if entry["id"] == account_id:
+            entry["profile_id"] = profile_id
+            _save_registry(entries)
+            return Account(**entry)
+    raise ValueError(f"找不到账号 {account_id}")
+
+
+def chrome_profile_dir(profile_id: str) -> Path:
+    """持久化 Chrome 配置目录的路径——按 profile_id 分组，不是按 account_id，
+    同一登录下的多个店铺账号会解析到同一个目录。"""
+    path = _data_root() / "chrome_profiles" / profile_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def delete_account(account_id: str) -> None:

@@ -1,12 +1,12 @@
 """复制登录信息新建账号：同一个 Temu 登录下如果挂了不止一个店铺，已经给
-其中一个店铺建过账号、导入过 Cookie 之后，其余店铺不需要重新走一遍
-Cookie-Editor 导出/粘贴流程——反正背后是同一份登录 Cookie，重新导一次
-纯属多余步骤，直接从已有账号复制登录态文件，只需要换一下要绑定的
-店铺名字。
+其中一个店铺建过账号、登录过之后，其余店铺不需要重新走"专属登录窗口"
+流程——直接绑定到同一个 Chrome 配置目录（同一份真实登录态），只需要换
+一下要绑定的店铺名字。任何一边刷新登录，两边自动一起生效（因为本来就是
+同一个配置目录，不是各自的复制品）。
 """
 from __future__ import annotations
 
-import shutil
+import uuid
 
 from PySide6.QtWidgets import (
     QComboBox,
@@ -20,6 +20,8 @@ from PySide6.QtWidgets import (
 )
 
 from temu_delisting import accounts
+from temu_delisting.browser import migrate_storage_state_into_profile
+from temu_delisting.config import load_settings
 
 
 class CopyAccountDialog(QDialog):
@@ -35,8 +37,8 @@ class CopyAccountDialog(QDialog):
 
         hint = QLabel(
             "适用场景：同一个 Temu 登录下有多个店铺（切换店铺弹窗里能看到好几个），"
-            "已经给其中一个店铺建过账号了。剩下的店铺不用重新导出 Cookie，直接从这个"
-            "账号复制登录信息，只需要换一下要绑定的店铺名字。"
+            "已经给其中一个店铺登录过了。剩下的店铺不用重新走一遍登录窗口，直接绑定"
+            "到同一份登录信息，只需要换一下要绑定的店铺名字。"
         )
         hint.setObjectName("hintLabel")
         hint.setWordWrap(True)
@@ -99,14 +101,27 @@ class CopyAccountDialog(QDialog):
         if not source_id:
             return
 
-        source_paths = accounts.account_paths(source_id)
-        if not source_paths.storage_state_path.exists():
-            QMessageBox.warning(self, "复制登录信息", "选中的这个账号还没有登录信息，没法复制。")
+        source_account = accounts.get_account(source_id)
+        if source_account is None:
             return
 
-        account = accounts.create_account(display_name, mall_name=mall_name)
-        target_paths = accounts.account_paths(account.id)
-        shutil.copy(source_paths.storage_state_path, target_paths.storage_state_path)
+        profile_id = source_account.profile_id
+        if not profile_id:
+            # 来源账号还没迁移到新方案（还是老的 storage_state.json）——
+            # 先给它建一个配置目录、把旧登录态灌进去，两边就都能用新方案了。
+            settings = load_settings(account_id=source_id)
+            if not settings.storage_state_path.exists():
+                QMessageBox.warning(self, "复制登录信息", "选中的这个账号还没有登录信息，没法复制。")
+                return
+            profile_id = uuid.uuid4().hex
+            profile_dir = accounts.chrome_profile_dir(profile_id)
+            try:
+                migrate_storage_state_into_profile(settings.storage_state_path, profile_dir, settings)
+            except Exception as exc:  # noqa: BLE001
+                QMessageBox.warning(self, "复制登录信息", f"迁移来源账号的登录信息失败：{exc}")
+                return
+            accounts.set_profile_id(source_id, profile_id)
 
+        account = accounts.create_account(display_name, mall_name=mall_name, profile_id=profile_id)
         self.created_account = account
         self.accept()

@@ -33,6 +33,14 @@ from .login_wizard import LoginWizardDialog
 _COLUMNS = ["显示名称", "店铺名称", "备注", "登录状态", "创建时间"]
 
 
+def _account_has_login(account: accounts.Account) -> bool:
+    if account.profile_id:
+        profile_dir = accounts.chrome_profile_dir(account.profile_id)
+        if profile_dir.exists() and any(profile_dir.iterdir()):
+            return True
+    return accounts.account_paths(account.id).storage_state_path.exists()
+
+
 class AccountManagementWidget(QWidget):
     accounts_changed = Signal()
 
@@ -118,7 +126,7 @@ class AccountManagementWidget(QWidget):
         account_list = accounts.list_accounts()
         self.table.setRowCount(len(account_list))
         for row, account in enumerate(account_list):
-            has_login = accounts.account_paths(account.id).storage_state_path.exists()
+            has_login = _account_has_login(account)
             values = [
                 account.display_name,
                 account.mall_name or "（不需要切换）",

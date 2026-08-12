@@ -107,6 +107,37 @@ def test_create_account_with_mall_name(data_root):
     assert accounts.get_account(account.id).mall_name == "Dwmane Shop"
 
 
+def test_create_account_defaults_to_empty_profile_id(data_root):
+    account = accounts.create_account("店铺A")
+    assert account.profile_id == ""
+
+
+def test_set_profile_id_updates_existing_account(data_root):
+    account = accounts.create_account("店铺A")
+    updated = accounts.set_profile_id(account.id, "profile-123")
+    assert updated.profile_id == "profile-123"
+    assert accounts.get_account(account.id).profile_id == "profile-123"
+
+
+def test_set_profile_id_unknown_account_raises(data_root):
+    with pytest.raises(ValueError):
+        accounts.set_profile_id("nope", "profile-123")
+
+
+def test_two_accounts_can_share_same_profile_id(data_root):
+    a = accounts.create_account("店铺A", mall_name="SaveNest", profile_id="shared-profile")
+    b = accounts.create_account("店铺B", mall_name="Dwmane Shop", profile_id="shared-profile")
+    assert a.profile_id == b.profile_id
+    assert accounts.chrome_profile_dir(a.profile_id) == accounts.chrome_profile_dir(b.profile_id)
+
+
+def test_chrome_profile_dir_creates_directory(data_root):
+    path = accounts.chrome_profile_dir("some-profile")
+    assert path.exists()
+    assert path.is_dir()
+    assert path.name == "some-profile"
+
+
 def test_set_mall_name_updates_existing_account(data_root):
     account = accounts.create_account("店铺A")
     updated = accounts.set_mall_name(account.id, "SaveNest")

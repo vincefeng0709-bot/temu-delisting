@@ -1,6 +1,7 @@
 """Playwright 浏览器/上下文封装。"""
 from __future__ import annotations
 
+import json
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,8 @@ def wait_settle(page: Page, timeout_ms: int = 8000) -> None:
 
 @contextmanager
 def launch_context(settings: Settings, pw: Playwright) -> Iterator[BrowserContext]:
+    """老方案：临时浏览器上下文 + 手动导入/导出的 storage_state.json 快照。
+    账号还没迁移到"持久化 Chrome 配置目录"方案时用这个（向后兼容）。"""
     launch_kwargs = {"headless": settings.headless}
     if settings.browser_channel:
         launch_kwargs["channel"] = settings.browser_channel
@@ -81,8 +84,39 @@ def launch_context(settings: Settings, pw: Playwright) -> Iterator[BrowserContex
 
 
 @contextmanager
+def launch_persistent_profile_context(settings: Settings, pw: Playwright) -> Iterator[BrowserContext]:
+    """新方案：复用一个真实的、人工登录过的 Chrome 用户配置目录。持久化
+    上下文自带浏览器进程，不用单独管理 Browser 对象，关掉 context 就是
+    关掉整个浏览器；登录态是 Chrome 自己维护的真实会话，不需要显式导出/
+    写回 storage_state.json 这一步。"""
+    launch_kwargs = {
+        "user_data_dir": str(settings.chrome_profile_dir),
+        "headless": settings.headless,
+    }
+    if settings.browser_channel:
+        launch_kwargs["channel"] = settings.browser_channel
+    if settings.slow_mo_ms:
+        launch_kwargs["slow_mo"] = settings.slow_mo_ms
+    context = pw.chromium.launch_persistent_context(**launch_kwargs)
+    try:
+        yield context
+    finally:
+        context.close()
+
+
+@contextmanager
 def open_page(settings: Settings) -> Iterator[Page]:
     with sync_playwright() as pw:
+        if settings.chrome_profile_dir is not None:
+            with launch_persistent_profile_context(settings, pw) as context:
+                _log_session_token_status(context, "本次运行开始时")
+                page = context.new_page()
+                try:
+                    yield page
+                finally:
+                    _log_session_token_status(context, "本次运行结束时")
+            return
+
         with launch_context(settings, pw) as context:
             _log_session_token_status(context, "本次运行开始时")
             page = context.new_page()
@@ -92,3 +126,26 @@ def open_page(settings: Settings) -> Iterator[Page]:
                 _log_session_token_status(context, "本次运行结束时")
                 settings.storage_state_path.parent.mkdir(parents=True, exist_ok=True)
                 context.storage_state(path=str(settings.storage_state_path))
+
+
+def migrate_storage_state_into_profile(storage_state_path: Path, profile_dir: Path, settings: Settings) -> None:
+    """把老方案（storage_state.json 快照）里的登录态灌进新建的持久化 Chrome
+    配置目录，账号切到新方案时不用重新登录一次。没有旧登录态就什么都不做
+    （新账号本来就没有）。"""
+    if not storage_state_path.exists():
+        return
+
+    state = json.loads(storage_state_path.read_text(encoding="utf-8"))
+    cookies = state.get("cookies", [])
+    if not cookies:
+        return
+
+    with sync_playwright() as pw:
+        launch_kwargs = {"user_data_dir": str(profile_dir), "headless": True}
+        if settings.browser_channel:
+            launch_kwargs["channel"] = settings.browser_channel
+        context = pw.chromium.launch_persistent_context(**launch_kwargs)
+        try:
+            context.add_cookies(cookies)
+        finally:
+            context.close()
