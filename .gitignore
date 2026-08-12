@@ -9,3 +9,5 @@ cookies*.json
 src/temu_delisting.egg-info/
 dist/
 build/
+*.zip
+test_shared_folder/
