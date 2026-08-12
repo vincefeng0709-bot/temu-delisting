@@ -43,6 +43,10 @@ class Account:
     # 完全一致，因为要靠文字去匹配、点击对应的切换按钮）。留空表示不做
     # 校验/切换（老账号、或者本来就只有一个店铺的情况）。
     mall_name: str = ""
+    # 自由文本备注，批量导入账号清单时用来记一下这个店铺来自哪个手机号/
+    # 那个手机号底下一共有几个店铺，方便事后核对——不是自动化要用的字段，
+    # 纯粹给人看。
+    notes: str = ""
 
 
 @dataclass
@@ -131,7 +135,7 @@ def get_account(account_id: str) -> Account | None:
     return None
 
 
-def create_account(display_name: str, mall_name: str = "") -> Account:
+def create_account(display_name: str, mall_name: str = "", notes: str = "") -> Account:
     _migrate_flat_layout_if_needed()
     entries = _load_registry()
 
@@ -146,6 +150,7 @@ def create_account(display_name: str, mall_name: str = "") -> Account:
         display_name=display_name,
         created_at=datetime.now(timezone.utc).isoformat(),
         mall_name=mall_name,
+        notes=notes,
     )
     entries.append(
         {
@@ -153,6 +158,7 @@ def create_account(display_name: str, mall_name: str = "") -> Account:
             "display_name": account.display_name,
             "created_at": account.created_at,
             "mall_name": account.mall_name,
+            "notes": account.notes,
         }
     )
     _save_registry(entries)
@@ -178,6 +184,17 @@ def set_mall_name(account_id: str, mall_name: str) -> Account:
     for entry in entries:
         if entry["id"] == account_id:
             entry["mall_name"] = mall_name
+            _save_registry(entries)
+            return Account(**entry)
+    raise ValueError(f"找不到账号 {account_id}")
+
+
+def set_notes(account_id: str, notes: str) -> Account:
+    """设置/修改这个账号的备注文字（纯展示用，不影响自动化）。"""
+    entries = _load_registry()
+    for entry in entries:
+        if entry["id"] == account_id:
+            entry["notes"] = notes
             _save_registry(entries)
             return Account(**entry)
     raise ValueError(f"找不到账号 {account_id}")

@@ -1,5 +1,9 @@
-"""主窗口：账号选择器 + 日期范围 + 扫描/下架/停止按钮 + 任务列表 + 实时日志区，
-外加一个"审核清单"标签页。
+"""主窗口："运行"标签页（账号选择器 + 日期范围 + 扫描/下架/停止按钮 + 任务
+列表 + 实时日志区）+ "账号管理"标签页 + "审核清单"标签页。
+
+账号的增删改查、批量导入都在"账号管理"页（account_management.py）里，
+这边只留一个账号下拉选择器，账号列表变了会通过 accounts_changed 信号通知
+这里刷新下拉框。
 
 支持多账号并发运行：切到另一个账号，可以在原来那个账号还在跑扫描/下架的
 同时，给这个新账号也开一个任务——每个任务是独立的后台线程（ScanWorker/
@@ -41,10 +45,7 @@ from temu_delisting.store import open_store
 
 from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
-from .copy_account_dialog import CopyAccountDialog
-from .edit_account_dialog import EditAccountDialog
-from .log_viewer import LogViewerDialog
-from .login_wizard import LoginWizardDialog
+from .account_management import AccountManagementWidget
 from .review_table import ReviewTableWidget
 
 _TASK_COLUMNS = ["账号", "类型", "状态", "操作"]
@@ -74,6 +75,9 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(tabs)
 
         tabs.addTab(self._build_run_tab(), "运行")
+        self.account_management = AccountManagementWidget(self._account_has_active_job)
+        self.account_management.accounts_changed.connect(self._reload_accounts)
+        tabs.addTab(self.account_management, "账号管理")
         self.review_table = ReviewTableWidget()
         tabs.addTab(self.review_table, "审核清单")
         self._tabs = tabs
@@ -106,47 +110,13 @@ class MainWindow(QMainWindow):
         self.account_combo.setMinimumWidth(220)
         self.account_combo.currentIndexChanged.connect(self._on_account_selection_changed)
 
-        self.rename_account_button = QPushButton("编辑")
-        self.rename_account_button.clicked.connect(self._on_rename_account_clicked)
-
-        self.update_login_button = QPushButton("更新登录信息")
-        self.update_login_button.clicked.connect(self._on_update_login_clicked)
-
-        self.delete_account_button = QPushButton("删除")
-        self.delete_account_button.setObjectName("dangerButton")
-        self.delete_account_button.clicked.connect(self._on_delete_account_clicked)
-
-        self.add_account_button = QPushButton("+ 添加账号")
-        self.add_account_button.clicked.connect(self._on_add_account_clicked)
-
-        self.copy_account_button = QPushButton("+ 复制账号")
-        self.copy_account_button.clicked.connect(self._on_copy_account_clicked)
-
-        self.view_log_button = QPushButton("查看日志")
-        self.view_log_button.clicked.connect(self._on_view_log_clicked)
+        hint = QLabel("账号的增删改查、批量导入在「账号管理」页")
+        hint.setObjectName("hintLabel")
 
         layout.addWidget(label)
         layout.addWidget(self.account_combo, stretch=1)
-        layout.addWidget(self.rename_account_button)
-        layout.addWidget(self.update_login_button)
-        layout.addWidget(self.delete_account_button)
-        layout.addWidget(self.add_account_button)
-        layout.addWidget(self.copy_account_button)
-        layout.addWidget(self.view_log_button)
+        layout.addWidget(hint)
         return layout
-
-    def _on_copy_account_clicked(self) -> None:
-        existing = accounts.list_accounts()
-        if not existing:
-            QMessageBox.information(self, "复制登录信息", "还没有任何账号，请先用「+ 添加账号」建一个。")
-            return
-        dialog = CopyAccountDialog(existing, self)
-        if dialog.exec() == CopyAccountDialog.Accepted and dialog.created_account is not None:
-            self._reload_accounts()
-            index = self.account_combo.findData(dialog.created_account.id)
-            if index >= 0:
-                self.account_combo.setCurrentIndex(index)
-            self._log(f"【复制账号】已成功创建账号「{dialog.created_account.display_name}」（复制自已有登录信息）。")
 
     def _on_account_selection_changed(self) -> None:
         self._update_action_buttons()
@@ -163,28 +133,6 @@ class MainWindow(QMainWindow):
         with open_store(settings.db_path) as store:
             suggestions = store.list_suggestions(batch_id)
         self.review_table.load(settings, batch_id, suggestions)
-
-    def _on_update_login_clicked(self) -> None:
-        account_id = self.account_combo.currentData()
-        if not account_id:
-            QMessageBox.information(self, "更新登录信息", "请先添加一个账号。")
-            return
-        account = accounts.get_account(account_id)
-        if account is None:
-            return
-
-        dialog = LoginWizardDialog(self, existing_account=account)
-        if dialog.exec() == LoginWizardDialog.Accepted:
-            self._log(f"【更新登录信息】账号「{account.display_name}」的登录信息已更新。")
-
-    def _on_view_log_clicked(self) -> None:
-        account_id = self.account_combo.currentData()
-        if not account_id:
-            QMessageBox.information(self, "查看日志", "请先添加一个账号。")
-            return
-        settings = load_settings(account_id=account_id)
-        dialog = LogViewerDialog(settings.log_dir, self)
-        dialog.exec()
 
     def _reload_accounts(self) -> None:
         current_id = self.account_combo.currentData()
@@ -203,72 +151,7 @@ class MainWindow(QMainWindow):
                 self.account_combo.setCurrentIndex(index)
         self.account_combo.blockSignals(False)
 
-        self.rename_account_button.setEnabled(has_accounts)
-        self.update_login_button.setEnabled(has_accounts)
-        self.delete_account_button.setEnabled(has_accounts)
         self._update_action_buttons()
-
-    def _on_add_account_clicked(self) -> None:
-        dialog = LoginWizardDialog(self)
-        if dialog.exec() == LoginWizardDialog.Accepted and dialog.created_account is not None:
-            self._reload_accounts()
-            index = self.account_combo.findData(dialog.created_account.id)
-            if index >= 0:
-                self.account_combo.setCurrentIndex(index)
-            self._log(f"【添加账号】已成功添加账号「{dialog.created_account.display_name}」。")
-
-    def _on_rename_account_clicked(self) -> None:
-        account_id = self.account_combo.currentData()
-        if not account_id:
-            return
-        account = accounts.get_account(account_id)
-        if account is None:
-            return
-
-        dialog = EditAccountDialog(account.display_name, account.mall_name, self)
-        if dialog.exec() != EditAccountDialog.Accepted:
-            return
-
-        if dialog.new_display_name != account.display_name:
-            accounts.rename_account(account_id, dialog.new_display_name)
-        if dialog.new_mall_name != account.mall_name:
-            accounts.set_mall_name(account_id, dialog.new_mall_name)
-
-        self._reload_accounts()
-        index = self.account_combo.findData(account_id)
-        if index >= 0:
-            self.account_combo.setCurrentIndex(index)
-        self._log(
-            f"【编辑账号】「{account.display_name}」→「{dialog.new_display_name}」，"
-            f"绑定店铺：「{dialog.new_mall_name or '（不自动切换）'}」"
-        )
-
-    def _on_delete_account_clicked(self) -> None:
-        account_id = self.account_combo.currentData()
-        if not account_id:
-            return
-        display_name = self.account_combo.currentText()
-
-        if self._account_has_active_job(account_id):
-            QMessageBox.warning(
-                self, "删除账号", f"账号「{display_name}」还有任务在运行，不能删除，请等它跑完。"
-            )
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "删除账号",
-            f"确定要删除账号「{display_name}」吗？\n这会连同它的登录信息、历史记录一起删掉，不可恢复。",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        accounts.delete_account(account_id)
-        self._batch_by_account.pop(account_id, None)
-        self._reload_accounts()
-        self._log(f"【删除账号】已删除「{display_name}」。")
 
     # -- 日期范围 --------------------------------------------------------
 
