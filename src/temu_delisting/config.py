@@ -15,6 +15,7 @@ from .paths import get_app_root
 @dataclass
 class Settings:
     account_id: str
+    mall_name: str
     seller_url: str
     username: str
     password: str
@@ -44,9 +45,12 @@ def load_settings(env_file: str | Path | None = None, account_id: str | None = N
     if account_id is None:
         account_id = accounts.ensure_default_account().id
     paths = accounts.account_paths(account_id)
+    account = accounts.get_account(account_id)
+    mall_name = account.mall_name if account else ""
 
     return Settings(
         account_id=account_id,
+        mall_name=mall_name,
         seller_url=os.getenv("TEMU_SELLER_URL", "https://seller.kuajingmaihuo.com"),
         username=os.getenv("TEMU_USERNAME", ""),
         password=os.getenv("TEMU_PASSWORD", ""),

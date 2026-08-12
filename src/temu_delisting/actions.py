@@ -15,7 +15,8 @@ from .auth import ensure_logged_in
 from .browser import open_page
 from .classifier import classify
 from .config import Settings
-from .delist import SkcOutcome, delist_spu
+from .delist import SkcOutcome, delist_spu, goto_lifecycle_management
+from .mall import ensure_correct_mall
 from .review import export_suggestions_csv
 from .store import Store, Suggestion
 
@@ -49,7 +50,10 @@ def run_scan(
 
     with open_page(settings) as page:
         ensure_logged_in(page, settings)
+        # 店铺切换的入口只在 agentseller.temu.com 这边的页面上才有，ensure_logged_in
+        # 落地的是 seller.kuajingmaihuo.com，所以要等真正导航过去之后再校验/切换。
         scraper.goto_violation_list(page, settings)
+        ensure_correct_mall(page, settings.mall_name)
         scraper.query_violations(page, start, end)
         rows = scraper.parse_violation_rows(page)
 
@@ -118,6 +122,11 @@ def run_apply(
 
     with open_page(settings) as page:
         ensure_logged_in(page, settings)
+        # 同上：店铺切换入口只在 agentseller.temu.com 才有，先导航过去一次
+        # 再校验/切换（delist_spu 内部每个 SPU 还会各自再导航一次这个页面，
+        # 那是已有的行为，这里只是确保切店铺发生在正确的域名下）。
+        goto_lifecycle_management(page, settings)
+        ensure_correct_mall(page, settings.mall_name)
         for index, suggestion in enumerate(confirmed, start=1):
             if should_stop is not None and should_stop():
                 stopped_early = True

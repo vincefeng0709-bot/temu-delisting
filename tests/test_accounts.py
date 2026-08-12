@@ -94,3 +94,26 @@ def test_delete_account_removes_registry_entry_and_data(data_root):
 def test_delete_unknown_account_raises(data_root):
     with pytest.raises(ValueError):
         accounts.delete_account("nope")
+
+
+def test_create_account_defaults_to_empty_mall_name(data_root):
+    account = accounts.create_account("店铺A")
+    assert account.mall_name == ""
+
+
+def test_create_account_with_mall_name(data_root):
+    account = accounts.create_account("店铺A", mall_name="Dwmane Shop")
+    assert account.mall_name == "Dwmane Shop"
+    assert accounts.get_account(account.id).mall_name == "Dwmane Shop"
+
+
+def test_set_mall_name_updates_existing_account(data_root):
+    account = accounts.create_account("店铺A")
+    updated = accounts.set_mall_name(account.id, "SaveNest")
+    assert updated.mall_name == "SaveNest"
+    assert accounts.get_account(account.id).mall_name == "SaveNest"
+
+
+def test_set_mall_name_unknown_account_raises(data_root):
+    with pytest.raises(ValueError):
+        accounts.set_mall_name("nope", "SaveNest")

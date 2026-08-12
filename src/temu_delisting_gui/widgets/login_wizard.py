@@ -52,6 +52,7 @@ class LoginWizardDialog(QDialog):
         layout.setSpacing(14)
 
         layout.addLayout(self._build_name_row())
+        layout.addLayout(self._build_mall_name_row())
         layout.addWidget(self._section_label("① 登录卖家中心"))
         layout.addLayout(self._build_open_login_row())
         layout.addWidget(self._section_label("② 安装 Cookie 导出工具（装过了可跳过）"))
@@ -100,6 +101,23 @@ class LoginWizardDialog(QDialog):
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("例如：SaveNest 美国站")
         layout.addWidget(self.name_input, stretch=1)
+        return layout
+
+    def _build_mall_name_row(self):
+        layout = QVBoxLayout()
+        row = QHBoxLayout()
+        row.addWidget(QLabel("店铺名称（如果一个登录下有多个店铺才需要填）："))
+        self.mall_name_input = QLineEdit()
+        self.mall_name_input.setPlaceholderText("留空表示不需要自动切换店铺")
+        row.addWidget(self.mall_name_input, stretch=1)
+        layout.addLayout(row)
+        layout.addWidget(
+            self._hint_label(
+                "一个 Temu 登录下如果挂了不止一个店铺，需要在这里填网页右上角显示的"
+                "店铺名字（必须完全一致），程序才知道每次要自动切到哪个店铺。"
+                "只有一个店铺的话留空就行。"
+            )
+        )
         return layout
 
     def _build_open_login_row(self):
@@ -202,7 +220,8 @@ class LoginWizardDialog(QDialog):
         merged = merge_cookie_states({"cookies": [], "origins": []}, self._cookie_state_seller)
         merged = merge_cookie_states(merged, self._cookie_state_agent)
 
-        account = accounts.create_account(display_name)
+        mall_name = self.mall_name_input.text().strip()
+        account = accounts.create_account(display_name, mall_name=mall_name)
         paths = accounts.account_paths(account.id)
         write_storage_state(merged, paths.storage_state_path)
 

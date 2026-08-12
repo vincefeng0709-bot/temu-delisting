@@ -14,7 +14,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -33,6 +32,7 @@ from temu_delisting.store import open_store
 
 from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
+from .edit_account_dialog import EditAccountDialog
 from .log_viewer import LogViewerDialog
 from .login_wizard import LoginWizardDialog
 from .review_table import ReviewTableWidget
@@ -84,7 +84,7 @@ class MainWindow(QMainWindow):
         self.account_combo = QComboBox()
         self.account_combo.setMinimumWidth(220)
 
-        self.rename_account_button = QPushButton("重命名")
+        self.rename_account_button = QPushButton("编辑")
         self.rename_account_button.clicked.connect(self._on_rename_account_clicked)
 
         self.delete_account_button = QPushButton("删除")
@@ -142,19 +142,27 @@ class MainWindow(QMainWindow):
         account_id = self.account_combo.currentData()
         if not account_id:
             return
-        current_name = self.account_combo.currentText()
-        new_name, ok = QInputDialog.getText(
-            self, "重命名账号", "新的账号/店铺名称：", text=current_name
-        )
-        if not ok or not new_name.strip():
+        account = accounts.get_account(account_id)
+        if account is None:
             return
 
-        accounts.rename_account(account_id, new_name.strip())
+        dialog = EditAccountDialog(account.display_name, account.mall_name, self)
+        if dialog.exec() != EditAccountDialog.Accepted:
+            return
+
+        if dialog.new_display_name != account.display_name:
+            accounts.rename_account(account_id, dialog.new_display_name)
+        if dialog.new_mall_name != account.mall_name:
+            accounts.set_mall_name(account_id, dialog.new_mall_name)
+
         self._reload_accounts()
         index = self.account_combo.findData(account_id)
         if index >= 0:
             self.account_combo.setCurrentIndex(index)
-        self._log(f"【重命名账号】「{current_name}」→「{new_name.strip()}」")
+        self._log(
+            f"【编辑账号】「{account.display_name}」→「{dialog.new_display_name}」，"
+            f"绑定店铺：「{dialog.new_mall_name or '（不自动切换）'}」"
+        )
 
     def _on_delete_account_clicked(self) -> None:
         account_id = self.account_combo.currentData()

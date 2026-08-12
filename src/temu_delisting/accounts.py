@@ -36,6 +36,13 @@ class Account:
     id: str
     display_name: str
     created_at: str
+    # 有的 Temu 登录下挂了不止一个店铺（同一套 Cookie 能访问多个"店铺"），
+    # 网站自己记的"当前激活的是哪个店铺"是服务端会话状态，不是单纯靠 Cookie
+    # 就能决定的——必须在页面上显式点一次"切换"才会生效。这个字段记录这个
+    # "账号"条目具体要绑定网页上显示的哪个店铺名字（必须跟页面上的文字
+    # 完全一致，因为要靠文字去匹配、点击对应的切换按钮）。留空表示不做
+    # 校验/切换（老账号、或者本来就只有一个店铺的情况）。
+    mall_name: str = ""
 
 
 @dataclass
@@ -124,7 +131,7 @@ def get_account(account_id: str) -> Account | None:
     return None
 
 
-def create_account(display_name: str) -> Account:
+def create_account(display_name: str, mall_name: str = "") -> Account:
     _migrate_flat_layout_if_needed()
     entries = _load_registry()
 
@@ -138,9 +145,15 @@ def create_account(display_name: str) -> Account:
         id=account_id,
         display_name=display_name,
         created_at=datetime.now(timezone.utc).isoformat(),
+        mall_name=mall_name,
     )
     entries.append(
-        {"id": account.id, "display_name": account.display_name, "created_at": account.created_at}
+        {
+            "id": account.id,
+            "display_name": account.display_name,
+            "created_at": account.created_at,
+            "mall_name": account.mall_name,
+        }
     )
     _save_registry(entries)
     account_paths(account.id)  # 提前建好目录
@@ -154,6 +167,17 @@ def rename_account(account_id: str, new_display_name: str) -> Account:
     for entry in entries:
         if entry["id"] == account_id:
             entry["display_name"] = new_display_name
+            _save_registry(entries)
+            return Account(**entry)
+    raise ValueError(f"找不到账号 {account_id}")
+
+
+def set_mall_name(account_id: str, mall_name: str) -> Account:
+    """设置/修改这个账号绑定的店铺名称（自动切换用），留空表示不做校验/切换。"""
+    entries = _load_registry()
+    for entry in entries:
+        if entry["id"] == account_id:
+            entry["mall_name"] = mall_name
             _save_registry(entries)
             return Account(**entry)
     raise ValueError(f"找不到账号 {account_id}")
