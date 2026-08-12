@@ -21,6 +21,7 @@ dev = [
 [project.scripts]
 temu-delisting = "temu_delisting.cli:main"
 temu-delisting-gui = "temu_delisting_gui.main:main"
+temu-delisting-satellite = "temu_delisting_satellite.main:main"
 
 [build-system]
 requires = ["setuptools>=68"]

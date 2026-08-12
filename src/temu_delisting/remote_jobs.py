@@ -86,6 +86,27 @@ def scan_pending_requests(root_dir: Path, account_names: list[str]) -> list[JobR
     return pending
 
 
+def read_result(root_dir: Path, account_name: str, job_id: str) -> dict | None:
+    """分机那边用来查自己提交的任务跑完了没有。文件不存在（还没处理完）
+    或者内容损坏，都返回 None，不抛异常——分机会定时重新来看一眼。"""
+    result_path = root_dir / account_name / f"{RESULT_PREFIX}{job_id}.json"
+    if not result_path.exists():
+        return None
+    try:
+        return json.loads(result_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def list_account_folders(root_dir: Path) -> list[str]:
+    """分机那边用来列出共享文件夹下面已经建好的账号子文件夹名字，给操作
+    人员一个下拉框选，而不是让他手打账号名字（打错字就会被主机那边直接
+    跳过，参考本文件顶部的说明）。"""
+    if not root_dir.exists():
+        return []
+    return sorted(p.name for p in root_dir.iterdir() if p.is_dir())
+
+
 def write_result(root_dir: Path, account_name: str, job_id: str, result: dict) -> Path:
     account_dir = root_dir / account_name
     account_dir.mkdir(parents=True, exist_ok=True)

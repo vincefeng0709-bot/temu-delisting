@@ -78,3 +78,39 @@ def test_write_result_creates_file_with_job_id_and_timestamp(tmp_path):
 def test_write_request_rejects_unknown_action(tmp_path):
     with pytest.raises(ValueError):
         remote_jobs.write_request(tmp_path, "SaveNest", "job1", "not_a_real_action", "2026-08-01", "2026-08-11")
+
+
+def test_read_result_returns_none_when_not_yet_processed(tmp_path):
+    remote_jobs.write_request(tmp_path, "SaveNest", "job1", "scan", "2026-08-01", "2026-08-11")
+
+    assert remote_jobs.read_result(tmp_path, "SaveNest", "job1") is None
+
+
+def test_read_result_returns_written_result(tmp_path):
+    remote_jobs.write_result(tmp_path, "SaveNest", "job1", {"status": "completed", "raw_row_count": 5})
+
+    result = remote_jobs.read_result(tmp_path, "SaveNest", "job1")
+
+    assert result["status"] == "completed"
+    assert result["raw_row_count"] == 5
+
+
+def test_read_result_returns_none_for_malformed_file(tmp_path):
+    account_dir = tmp_path / "SaveNest"
+    account_dir.mkdir()
+    (account_dir / "result_job1.json").write_text("not valid json", encoding="utf-8")
+
+    assert remote_jobs.read_result(tmp_path, "SaveNest", "job1") is None
+
+
+def test_list_account_folders_returns_sorted_subfolder_names(tmp_path):
+    (tmp_path / "SaveNest").mkdir()
+    (tmp_path / "Dwmane Shop").mkdir()
+    (tmp_path / "not_a_folder.txt").write_text("x", encoding="utf-8")
+
+    assert remote_jobs.list_account_folders(tmp_path) == ["Dwmane Shop", "SaveNest"]
+
+
+def test_list_account_folders_missing_root_returns_empty(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    assert remote_jobs.list_account_folders(missing) == []
