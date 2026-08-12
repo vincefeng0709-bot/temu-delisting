@@ -163,6 +163,18 @@ class Store:
         )
         self._conn.commit()
 
+    def confirm_all_suggested(self, batch_id: str) -> int:
+        """接口程序用：分机远程触发「扫描并自动下架」时，把这批扫描到的
+        条目（不分 delist_suggested / needs_human_review）全部自动标成
+        confirmed——分机那边已经明确要求主机这边不需要人工复核，直接按
+        用户的决定全部确认。返回确认了多少条。"""
+        cur = self._conn.execute(
+            "UPDATE suggestions SET review_status = 'confirmed' WHERE batch_id = ?",
+            (batch_id,),
+        )
+        self._conn.commit()
+        return cur.rowcount
+
     def list_suggestions(self, batch_id: str, review_status: Optional[str] = None) -> list[Suggestion]:
         query = "SELECT * FROM suggestions WHERE batch_id = ?"
         params: list = [batch_id]

@@ -20,8 +20,9 @@ import threading
 import uuid
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 
-from PySide6.QtCore import QDate
+from PySide6.QtCore import QDate, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -39,16 +40,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from temu_delisting import accounts
+from temu_delisting import accounts, remote_jobs
 from temu_delisting.config import load_settings
+from temu_delisting.remote_config import load_remote_config
 from temu_delisting.store import open_store
 
 from .._version import __version__
 from ..worker import ApplyWorker, ScanWorker
 from .account_management import AccountManagementWidget
+from .remote_jobs_settings import RemoteJobsSettingsWidget
 from .review_table import ReviewTableWidget
 
 _TASK_COLUMNS = ["账号", "类型", "状态", "操作"]
+_REMOTE_POLL_INTERVAL_MS = 10000
 
 
 @dataclass
@@ -59,6 +63,10 @@ class JobEntry:
     kind: str  # "scan" | "apply"
     row: int
     stop_event: threading.Event | None = None
+    # 这个任务如果是分机通过共享文件夹远程触发的，这里记录对应的请求信息，
+    # 完成/失败之后要把结果写回共享文件夹；本地手动点按钮触发的任务这里是
+    # None，走原来的弹窗确认流程。
+    remote_request: remote_jobs.JobRequest | None = None
 
 
 class MainWindow(QMainWindow):
@@ -80,10 +88,15 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.account_management, "账号管理")
         self.review_table = ReviewTableWidget()
         tabs.addTab(self.review_table, "审核清单")
+        tabs.addTab(RemoteJobsSettingsWidget(), "接口程序")
         self._tabs = tabs
 
         self.statusBar().showMessage("就绪")
         self._reload_accounts()
+
+        self._remote_timer = QTimer(self)
+        self._remote_timer.timeout.connect(self._poll_remote_jobs)
+        self._remote_timer.start(_REMOTE_POLL_INTERVAL_MS)
 
     # -- "运行" 标签页 ----------------------------------------------------
 
@@ -239,12 +252,26 @@ class MainWindow(QMainWindow):
             return
 
         account_name = self.account_combo.currentText()
+        self._start_scan_job(account_id, account_name, start, end)
+
+    def _start_scan_job(
+        self,
+        account_id: str,
+        account_name: str,
+        start: str,
+        end: str,
+        remote_request: remote_jobs.JobRequest | None = None,
+    ) -> None:
         settings = load_settings(account_id=account_id)
-        self._log(f"【开始扫描】账号「{account_name}」，日期 {start} ~ {end}")
+        prefix = "【远程扫描】" if remote_request is not None else "【开始扫描】"
+        self._log(f"{prefix}账号「{account_name}」，日期 {start} ~ {end}")
 
         job_id = uuid.uuid4().hex
-        row = self._add_task_row(account_name, "扫描")
-        self._jobs[job_id] = JobEntry(job_id, account_id, account_name, "scan", row)
+        kind_label = "远程扫描" if remote_request is not None else "扫描"
+        row = self._add_task_row(account_name, kind_label)
+        self._jobs[job_id] = JobEntry(
+            job_id, account_id, account_name, "scan", row, remote_request=remote_request
+        )
 
         worker = ScanWorker(settings, start, end)
         self._workers[job_id] = worker
@@ -265,7 +292,7 @@ class MainWindow(QMainWindow):
         self._batch_by_account[job.account_id] = result.batch_id
         self._log(f"[{job.account_name}] 扫描完成，共 {result.row_count} 条")
 
-        if self.account_combo.currentData() == job.account_id:
+        if job.remote_request is None and self.account_combo.currentData() == job.account_id:
             settings = load_settings(account_id=job.account_id)
             self.review_table.load(
                 settings,
@@ -277,7 +304,45 @@ class MainWindow(QMainWindow):
             )
             self._tabs.setCurrentWidget(self.review_table)
 
+        if job.remote_request is not None:
+            self._handle_remote_scan_finished(job, result)
+
         self._update_action_buttons()
+
+    def _handle_remote_scan_finished(self, job: JobEntry, result) -> None:
+        request = job.remote_request
+        assert request is not None
+        if request.action == remote_jobs.ACTION_SCAN:
+            self._write_remote_result(
+                request,
+                "completed",
+                total_from_page=result.total_from_page,
+                raw_row_count=result.row_count,
+                unique_spu_count=result.unique_spu_count,
+            )
+            return
+
+        # scan_and_apply：分机已经明确要求不需要人工复核，主机这边把这批
+        # 扫到的条目（不分是否「建议下架」）全部自动确认，确认完立刻下架。
+        settings = load_settings(account_id=job.account_id)
+        with open_store(settings.db_path) as store:
+            confirmed_count = store.confirm_all_suggested(result.batch_id)
+
+        if confirmed_count == 0:
+            self._log(f"[{job.account_name}] 远程任务：这次扫描没有抓到任何商品，本次不执行下架。")
+            self._write_remote_result(
+                request,
+                "completed",
+                total_from_page=result.total_from_page,
+                raw_row_count=result.row_count,
+                unique_spu_count=result.unique_spu_count,
+                confirmed_count=0,
+                note="扫描结果为空，未执行下架",
+            )
+            return
+
+        self._log(f"[{job.account_name}] 远程任务：已自动确认 {confirmed_count} 个商品，接下来自动下架。")
+        self._start_apply_job(job.account_id, job.account_name, result.batch_id, remote_request=request)
 
     def _on_scan_failed(self, job_id: str, message: str) -> None:
         job = self._jobs.pop(job_id, None)
@@ -287,7 +352,10 @@ class MainWindow(QMainWindow):
 
         self._set_task_status(job.row, "失败")
         self._log(f"[{job.account_name}] 扫描失败：{message}")
-        QMessageBox.warning(self, "扫描失败", f"账号「{job.account_name}」：\n{message}")
+        if job.remote_request is not None:
+            self._write_remote_result(job.remote_request, "failed", message=message)
+        else:
+            QMessageBox.warning(self, "扫描失败", f"账号「{job.account_name}」：\n{message}")
         self._update_action_buttons()
 
     # -- 下架 --------------------------------------------------------
@@ -328,11 +396,24 @@ class MainWindow(QMainWindow):
             return
 
         self._log(f"【开始下架】账号「{account_name}」，批次 {batch_id}，共 {confirmed_count} 个商品")
+        self._start_apply_job(account_id, account_name, batch_id)
+
+    def _start_apply_job(
+        self,
+        account_id: str,
+        account_name: str,
+        batch_id: str,
+        remote_request: remote_jobs.JobRequest | None = None,
+    ) -> None:
+        settings = load_settings(account_id=account_id)
 
         job_id = uuid.uuid4().hex
-        row = self._add_task_row(account_name, "下架")
+        kind_label = "远程下架" if remote_request is not None else "下架"
+        row = self._add_task_row(account_name, kind_label)
         stop_event = threading.Event()
-        self._jobs[job_id] = JobEntry(job_id, account_id, account_name, "apply", row, stop_event)
+        self._jobs[job_id] = JobEntry(
+            job_id, account_id, account_name, "apply", row, stop_event, remote_request=remote_request
+        )
         self._add_stop_button(row, job_id)
 
         worker = ApplyWorker(settings, batch_id, False, stop_event.is_set)
@@ -378,7 +459,18 @@ class MainWindow(QMainWindow):
             summary_lines.append("（已手动停止，还有商品没处理完）")
         self._log("【下架完成】" + "；".join(summary_lines))
 
-        QMessageBox.information(self, "下架处理完成", "\n".join(summary_lines))
+        if job.remote_request is not None:
+            self._write_remote_result(
+                job.remote_request,
+                "completed",
+                batch_id=batch_id,
+                skc_success=success,
+                skc_needs_follow_up=needs_follow_up,
+                spu_failed=failed_spu_count,
+                stopped_early=result.stopped_early,
+            )
+        else:
+            QMessageBox.information(self, "下架处理完成", "\n".join(summary_lines))
         self._update_action_buttons()
 
     def _on_apply_failed(self, job_id: str, message: str) -> None:
@@ -390,7 +482,10 @@ class MainWindow(QMainWindow):
         self._set_task_status(job.row, "失败")
         self._clear_stop_button(job.row)
         self._log(f"[{job.account_name}] 下架失败：{message}")
-        QMessageBox.warning(self, "下架失败", f"账号「{job.account_name}」：\n{message}")
+        if job.remote_request is not None:
+            self._write_remote_result(job.remote_request, "failed", message=message)
+        else:
+            QMessageBox.warning(self, "下架失败", f"账号「{job.account_name}」：\n{message}")
         self._update_action_buttons()
 
     def _on_stop_job_clicked(self, job_id: str) -> None:
@@ -403,6 +498,50 @@ class MainWindow(QMainWindow):
         button = self.task_table.cellWidget(job.row, 3)
         if button is not None:
             button.setEnabled(False)
+
+    # -- 接口程序（远程任务）------------------------------------------------
+
+    def _poll_remote_jobs(self) -> None:
+        config = load_remote_config()
+        if not config.enabled or not config.root_dir:
+            return
+
+        root_dir = Path(config.root_dir)
+        account_names = [a.display_name for a in accounts.list_accounts()]
+        try:
+            pending = remote_jobs.scan_pending_requests(root_dir, account_names)
+        except OSError as exc:
+            self._log(f"[接口程序] 读取共享文件夹失败：{exc}")
+            return
+
+        for request in pending:
+            account = accounts.get_account_by_name(request.account_name)
+            if account is None:
+                self._log(f"[接口程序] 找不到账号「{request.account_name}」，跳过任务 {request.job_id}")
+                self._write_remote_result(
+                    request, "failed", message="主机这边找不到这个账号，请检查账号管理页里的显示名称是否完全一致"
+                )
+                continue
+            if self._account_has_active_job(account.id):
+                continue  # 账号正忙，先跳过，下次轮询再看
+
+            self._log(
+                f"[接口程序] 收到远程任务：账号「{account.display_name}」，"
+                f"{'扫描并自动下架' if request.action == remote_jobs.ACTION_SCAN_AND_APPLY else '仅扫描'}，"
+                f"{request.start_date} ~ {request.end_date}"
+            )
+            self._start_scan_job(
+                account.id, account.display_name, request.start_date, request.end_date, remote_request=request
+            )
+
+    def _write_remote_result(self, request: remote_jobs.JobRequest, status: str, **extra) -> None:
+        account_name = request.request_path.parent.name
+        root_dir = request.request_path.parent.parent
+        try:
+            remote_jobs.write_result(root_dir, account_name, request.job_id, {"status": status, **extra})
+            self._log(f"[接口程序] 已写回结果：账号「{account_name}」，任务 {request.job_id}，状态 {status}")
+        except OSError as exc:
+            self._log(f"[接口程序] 写回结果失败（任务 {request.job_id}）：{exc}")
 
     # -- 任务列表 --------------------------------------------------------
 

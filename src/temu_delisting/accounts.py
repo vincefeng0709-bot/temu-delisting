@@ -27,6 +27,12 @@ def _data_root() -> Path:
     return path if path.is_absolute() else get_app_root() / path
 
 
+def data_root() -> Path:
+    """给其他模块（比如接口程序的本地设置）复用同一份 data 根目录计算逻辑，
+    不用各自重新算一遍打包前/打包后的路径差异。"""
+    return _data_root()
+
+
 def _registry_path() -> Path:
     return _data_root() / "accounts.json"
 
@@ -137,6 +143,16 @@ def list_accounts() -> list[Account]:
 def get_account(account_id: str) -> Account | None:
     for entry in _load_registry():
         if entry["id"] == account_id:
+            return Account(**entry)
+    return None
+
+
+def get_account_by_name(display_name: str) -> Account | None:
+    """接口程序用：分机丢过来的任务文件是按账号「显示名称」分文件夹的，
+    不知道 account_id，得靠名字反查。名字要求跟账号管理页里完全一致
+    （大小写、空格都算），重名的话返回第一个匹配上的。"""
+    for entry in _load_registry():
+        if entry["display_name"] == display_name:
             return Account(**entry)
     return None
 

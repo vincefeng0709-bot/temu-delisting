@@ -62,6 +62,22 @@ def test_get_account_returns_none_for_unknown_id(data_root):
     assert accounts.get_account("nope") is None
 
 
+def test_get_account_by_name_finds_matching_display_name(data_root):
+    account = accounts.create_account("SaveNest 美国站")
+    found = accounts.get_account_by_name("SaveNest 美国站")
+    assert found is not None
+    assert found.id == account.id
+
+
+def test_get_account_by_name_returns_none_for_unknown_name(data_root):
+    accounts.create_account("店铺A")
+    assert accounts.get_account_by_name("拼错的名字") is None
+
+
+def test_data_root_matches_internal_data_root(data_root):
+    assert accounts.data_root() == data_root
+
+
 def test_rename_account_keeps_id_and_data(data_root):
     account = accounts.create_account("旧名字")
     paths = accounts.account_paths(account.id)

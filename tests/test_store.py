@@ -36,6 +36,30 @@ def test_review_status_filter(store: Store):
     assert len(pending) == 0
 
 
+def test_confirm_all_suggested_confirms_every_classification(store: Store):
+    batch_id = store.create_batch("2026-08-06", "2026-08-07")
+    store.add_suggestion(batch_id, "SPU1", "知识产权违规", "", "delist_suggested")
+    store.add_suggestion(batch_id, "SPU2", "未知类型", "", "needs_human_review")
+
+    confirmed_count = store.confirm_all_suggested(batch_id)
+
+    assert confirmed_count == 2
+    statuses = {s.spu_id: s.review_status for s in store.list_suggestions(batch_id)}
+    assert statuses == {"SPU1": "confirmed", "SPU2": "confirmed"}
+
+
+def test_confirm_all_suggested_only_touches_own_batch(store: Store):
+    batch_id_a = store.create_batch("2026-08-06", "2026-08-07")
+    batch_id_b = store.create_batch("2026-08-07", "2026-08-08")
+    store.add_suggestion(batch_id_a, "SPU1", "知识产权违规", "", "delist_suggested")
+    store.add_suggestion(batch_id_b, "SPU2", "知识产权违规", "", "delist_suggested")
+
+    store.confirm_all_suggested(batch_id_a)
+
+    assert store.list_suggestions(batch_id_a)[0].review_status == "confirmed"
+    assert store.list_suggestions(batch_id_b)[0].review_status == "pending_review"
+
+
 def test_skc_idempotency(store: Store):
     batch_id = store.create_batch("2026-08-06", "2026-08-07")
     assert store.is_already_delisted("SKC1") is False
