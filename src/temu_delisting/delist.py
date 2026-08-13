@@ -10,6 +10,7 @@ from playwright.sync_api import Page
 from . import chat
 from .browser import wait_settle
 from .config import Settings
+from .logging_setup import get_logger
 from .popups import dismiss_known_popups
 from .store import Store
 from .text_match import loose_text
@@ -147,8 +148,8 @@ def delist_spu(
             # 连续处理下一个 SKC 前稍微停顿一下，避免过快连续触发
             page.wait_for_timeout(settings.chat_cooldown_seconds * 1000)
 
-        outcomes.append(
-            delist_one_skc(
+        try:
+            outcome = delist_one_skc(
                 page,
                 settings,
                 spu_id,
@@ -159,5 +160,14 @@ def delist_spu(
                 pause_before_chat=pause_before_chat,
                 pause_on_error=pause_on_error,
             )
-        )
+        except Exception as exc:  # noqa: BLE001
+            # 单个 SKC 出错（比如客服面板上卡了个没清理掉的"已处理成功"残留
+            # 弹窗，把后面的点击一直堵到超时）之前会直接把异常甩到 delist_spu
+            # 外面，导致这个 SPU 剩下的 SKC 全部没机会处理——一个 SKC 卡住不该
+            # 连累同一个 SPU 下别的、本来能正常处理的 SKC。这里接住，记一条
+            # 清楚说明原因的失败记录，继续处理下一个 SKC。
+            get_logger().exception(f"[delist] SKC {skc_id} 处理时出错，跳过，继续下一个")
+            outcome = SkcOutcome(skc_id=skc_id, status="failed", detail=f"处理出错，已跳过：{exc}")
+            store.record_skc_result(skc_id, spu_id, batch_id, "failed", detail=outcome.detail)
+        outcomes.append(outcome)
     return outcomes

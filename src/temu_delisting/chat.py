@@ -32,17 +32,28 @@ def dismiss_already_processed_alert(page: Page) -> bool:
     "该商品已在您的上次咨询后处理成功"）。这类残留弹窗会挡住后面所有点击，
     每次开始处理一个新 SKC 之前都要先检查一下有没有这种残留，有就关掉。
     返回 True 表示确实清理了一个残留弹窗。
+
+    点第一个按钮之后弹窗通常会整个关掉，第二个按钮的元素跟着从 DOM 里消失
+    ——如果这时候还硬点它，Playwright 的可操作性检测会一直等它变得可点，
+    等不到就抛超时异常，把这个当成"清理弹窗"这一步本身给搞崩了（调用方
+    没接住这个异常的话，会连累这个 SKC 甚至整个 SPU 都处理失败，而日志里
+    只会看到一句语焉不详的"点击失败"，看不出跟这个弹窗有关）。所以两个
+    按钮的点击都要单独兜底，点不到就跳过，不能让"关弹窗"这个动作本身
+    变成新的故障点。
     """
     already_processed = page.get_by_text(loose_text(ALREADY_PROCESSED_TEXT))
     if already_processed.count() == 0:
         return False
 
-    confirm_button = page.get_by_role("button", name=loose_text("确认"))
-    if confirm_button.count():
-        confirm_button.first.click()
-    cancel_button = page.get_by_role("button", name=loose_text("取消"))
-    if cancel_button.count():
-        cancel_button.first.click()
+    logger = get_logger()
+    for button_text in ("确认", "取消"):
+        button = page.get_by_role("button", name=loose_text(button_text))
+        if button.count() == 0:
+            continue
+        try:
+            button.first.click(timeout=3000)
+        except Exception as exc:  # noqa: BLE001 — 关弹窗这一步本身不能再抛出新异常
+            logger.warning(f"[chat] 点「已处理成功」弹窗的「{button_text}」按钮失败（弹窗可能已经自己关了）：{exc}")
     return True
 
 
@@ -120,7 +131,15 @@ def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: 
 
     dry_run=True 时只填表单，不点最终的"申请下架"按钮 —— 用来验证前面
     流程走对了，不会真的提交。
+
+    实测发现"已处理成功"这个残留弹窗经常正好在这个表单打开之后才冒出来
+    （盖在表单上面），不是只在 trigger_delist_flow 那个更早的检查点——
+    这里再检查一次，不然弹窗会挡住"申请下架"按钮，点击一直等不到它变成
+    可点状态，最后超时报一个看不出跟这个弹窗有关的模糊错误。
     """
+    if dismiss_already_processed_alert(page):
+        get_logger().info(f"[chat] SKC {skc_id} 打开下架表单时清理了一个残留的「已处理成功」弹窗")
+
     dialog = page.get_by_text("发送下架商品信息").locator("xpath=ancestor::*[self::div][1]")
 
     id_input = dialog.get_by_placeholder("请输入完整SKC ID")
@@ -141,6 +160,11 @@ def submit_delist_request(page: Page, skc_id: str, delist_reason: str, dry_run: 
 
     if dry_run:
         return
+
+    # 填表单这几步之间也可能冒出弹窗（盖在"申请下架"按钮上面），点之前
+    # 再兜底检查一次，不然点击会一直等按钮变可点，等到超时才报错。
+    if dismiss_already_processed_alert(page):
+        get_logger().info(f"[chat] SKC {skc_id} 点「申请下架」前清理了一个残留的「已处理成功」弹窗")
 
     dialog.get_by_role("button", name=loose_text("申请下架")).click()
     get_logger().info(f"[chat] 已提交下架申请：SKC {skc_id}，原因「{delist_reason}」")
