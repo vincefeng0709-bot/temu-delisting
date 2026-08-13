@@ -53,6 +53,12 @@ from .review_table import ReviewTableWidget
 
 _TASK_COLUMNS = ["账号", "类型", "状态", "操作"]
 _REMOTE_POLL_INTERVAL_MS = 10000
+# 接口程序（局域网远程任务）这套 UI 先从界面上隐藏——部署方式要按"借用
+# 已有的按店铺分好的共享盘目录，而不是专门建一个空白共享文件夹"重新设计，
+# 旧版本的排队/并发设置对新方案不一定适用，先别让同事看到还没改完的东西。
+# remote_jobs.py / remote_config.py 这些底层模块都还在，新方案定下来之后
+# 把这里改回 True 就行，不用重写。
+_ENABLE_REMOTE_JOBS_TAB = False
 
 
 @dataclass
@@ -92,15 +98,17 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.account_management, "账号管理")
         self.review_table = ReviewTableWidget()
         self._review_tab_index = tabs.addTab(self.review_table, "审核清单")
-        tabs.addTab(RemoteJobsSettingsWidget(), "接口程序")
+        if _ENABLE_REMOTE_JOBS_TAB:
+            tabs.addTab(RemoteJobsSettingsWidget(), "接口程序")
         self._tabs = tabs
 
         self.statusBar().showMessage("就绪")
         self._reload_accounts()
 
-        self._remote_timer = QTimer(self)
-        self._remote_timer.timeout.connect(self._poll_remote_jobs)
-        self._remote_timer.start(_REMOTE_POLL_INTERVAL_MS)
+        if _ENABLE_REMOTE_JOBS_TAB:
+            self._remote_timer = QTimer(self)
+            self._remote_timer.timeout.connect(self._poll_remote_jobs)
+            self._remote_timer.start(_REMOTE_POLL_INTERVAL_MS)
 
     # -- "运行" 标签页 ----------------------------------------------------
 

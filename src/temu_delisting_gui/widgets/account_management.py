@@ -101,6 +101,10 @@ class AccountManagementWidget(QWidget):
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.clicked.connect(self._on_delete_clicked)
 
+        self.clear_all_button = QPushButton("一键清空全部账号")
+        self.clear_all_button.setObjectName("dangerButton")
+        self.clear_all_button.clicked.connect(self._on_clear_all_clicked)
+
         layout.addWidget(self.add_button)
         layout.addWidget(self.copy_button)
         layout.addWidget(self.import_button)
@@ -112,6 +116,7 @@ class AccountManagementWidget(QWidget):
         layout.addWidget(self.update_login_button)
         layout.addWidget(self.view_log_button)
         layout.addWidget(self.delete_button)
+        layout.addWidget(self.clear_all_button)
         return layout
 
     def _update_button_states(self) -> None:
@@ -213,29 +218,35 @@ class AccountManagementWidget(QWidget):
             QMessageBox.warning(self, "导入失败", f"读取文件失败，请确认是合法的 Excel 文件：{exc}")
             return
 
-        existing_names = {a.display_name for a in accounts.list_accounts()}
         created = 0
-        skipped = 0
+        updated = 0
         for shop in result.shops:
-            if shop.display_name in existing_names:
-                skipped += 1
-                continue
-            accounts.create_account(shop.display_name, mall_name=shop.mall_name, notes=shop.notes)
-            existing_names.add(shop.display_name)
-            created += 1
+            existing = accounts.get_account_by_name(shop.display_name)
+            if existing is not None:
+                # 同一个店铺名字再导入一次，按最新的 Excel 内容覆盖店铺名称/
+                # 备注——不是新建也不是跳过，不然反复测试/更新 Excel 会越堆
+                # 越多重复账号。登录信息（profile_id）不动，覆盖的只是这两个
+                # "架子"字段，不会影响已经配置好的登录态。
+                accounts.set_mall_name(existing.id, shop.mall_name)
+                accounts.set_notes(existing.id, shop.notes)
+                updated += 1
+            else:
+                accounts.create_account(shop.display_name, mall_name=shop.mall_name, notes=shop.notes)
+                created += 1
 
         self.refresh()
         self.accounts_changed.emit()
 
         summary = [f"新建了 {created} 个账号"]
-        if skipped:
-            summary.append(f"跳过了 {skipped} 个（名字跟已有账号重复）")
+        if updated:
+            summary.append(f"覆盖更新了 {updated} 个已存在的账号（店铺名称/备注按 Excel 最新内容覆盖，登录信息不受影响）")
         if result.issues:
             summary.append("")
             summary.append("以下几行有问题，请核对源文件：")
             summary.extend(f"第 {issue.row_number} 行：{issue.message}" for issue in result.issues)
-        summary.append("")
-        summary.append("这些账号目前都还没有登录信息，需要逐个用「+ 添加账号」或「+ 复制账号」补上。")
+        if created:
+            summary.append("")
+            summary.append("新建的账号目前都还没有登录信息，需要逐个用「+ 添加账号」或「+ 复制账号」补上。")
         QMessageBox.information(self, "导入完成", "\n".join(summary))
 
     # -- 改 ------------------------------------------------------
@@ -326,3 +337,38 @@ class AccountManagementWidget(QWidget):
 
         if errors:
             QMessageBox.warning(self, "部分删除失败", "以下账号删除失败：\n" + "\n".join(errors))
+
+    def _on_clear_all_clicked(self) -> None:
+        all_accounts = accounts.list_accounts()
+        if not all_accounts:
+            return
+
+        busy = [a for a in all_accounts if self._is_account_busy(a.id)]
+        if busy:
+            names = "、".join(f"「{a.display_name}」" for a in busy)
+            QMessageBox.warning(self, "一键清空全部账号", f"{names} 还有任务在运行，不能清空，请等它跑完后再试。")
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "一键清空全部账号",
+            f"确定要清空全部 {len(all_accounts)} 个账号吗？这会连同它们的登录信息、历史记录一起删掉，"
+            "不可恢复——一般是重新测试或者交付前想清空干净才会用这个，日常删几个账号请用「删除所选」。",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        errors = []
+        for account in all_accounts:
+            try:
+                accounts.delete_account(account.id)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"「{account.display_name}」：{exc}")
+
+        self.refresh()
+        self.accounts_changed.emit()
+
+        if errors:
+            QMessageBox.warning(self, "部分清空失败", "以下账号删除失败：\n" + "\n".join(errors))
